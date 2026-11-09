@@ -1,0 +1,12 @@
+{
+  "aboutMe": "Np. rola, firma i branża, czym się zajmujesz, na co patrzysz w postach i jak lubisz pisać komentarze.",
+  "provider": "anthropic",
+  "models": {
+    "anthropic": "claude-sonnet-5-5",
+    "openrouter": "anthropic/claude-sonnet-5.5"
+  },
+  "effort": "low",
+  "commentLanguage": "auto",
+  "tone": "factual",
+  "length": "short"
+}

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.cache/
+*.log
+# personal, non-secret defaults (see README); keep only the example in git
+local-config/*
+!local-config/defaults.example.json
+# local tool caches
+.impeccable/

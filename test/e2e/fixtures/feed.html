@@ -1,0 +1,103 @@
+<!doctype html>
+<!--
+  Simplified imitation of LinkedIn markup (state: 2026-11) for e2e tests:
+  1. a feed post with "…więcej" (see more), an image and a comment with a reply box,
+  2. a second feed post (to check the right post is picked),
+  3. the photo lightbox dialog from the user's screenshot (placeholder "Złóż życzenia…").
+  Real LinkedIn markup differs in details; this checks the extension's mechanics.
+-->
+<html lang="pl">
+<head><meta charset="utf-8"><title>LinkedIn (fixture)</title></head>
+<body>
+<main class="scaffold-finite-scroll">
+
+  <div class="feed-shared-update-v2" data-urn="urn:li:activity:7001" role="article">
+    <div class="update-components-actor">
+      <a class="update-components-actor__meta-link" href="https://www.linkedin.com/company/volteum/">
+        <img class="update-components-actor__avatar-image" src="https://media.licdn.com/dms/image/avatar-volteum.png" width="48" height="48" alt="Volteum">
+        <span class="update-components-actor__title"><span aria-hidden="true">Volteum</span><span class="visually-hidden">Volteum</span></span>
+        <span class="update-components-actor__description">1 234 obserwujących</span>
+      </a>
+    </div>
+    <div class="feed-shared-inline-show-more-text">
+      <span class="update-components-text break-words"><span dir="ltr" id="post1text">Volteum is heading to Utrecht.<br><br>Fleet Expo 2026 takes place at Jaarbeurs Utrecht on 11 and 12 November, and our CEO Zsofia Toth and CTO Dávid Kertész will both be there.</span></span>
+      <button class="feed-shared-inline-show-more-text__see-more-less-toggle" id="seeMore" type="button">…więcej</button>
+    </div>
+    <div class="update-components-image">
+      <img class="update-components-image__image" src="https://media.licdn.com/dms/image/fleet-expo-banner.png" width="800" height="450" alt="Meet us at Fleet Expo 2026">
+    </div>
+    <div class="social-details-social-counts"><span>12 komentarzy</span></div>
+    <div class="feed-shared-social-action-bar">
+      <button type="button">Lubię to</button><button type="button">Komentarz</button><button type="button">Udostępnij</button>
+    </div>
+    <div class="comments-comment-box">
+      <div class="comments-comment-texteditor">
+        <div class="ql-editor ql-blank" id="editor1" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Dodaj komentarz…"></div>
+      </div>
+    </div>
+    <div class="comments-comments-list">
+      <article class="comments-comment-entity" data-id="urn:li:comment:(activity:7001,9001)">
+        <span class="comments-comment-meta__description-title">Anna Nowak</span>
+        <div class="comments-comment-item__main-content"><span dir="ltr">Great news! Will you also show the hybrid fleet dashboard at the booth?</span></div>
+        <button type="button">Odpowiedz</button>
+        <div class="comments-comment-box comments-reply-box">
+          <div class="ql-editor" id="replyEditor" contenteditable="true" role="textbox" data-placeholder="Dodaj odpowiedź…"></div>
+        </div>
+      </article>
+      <article class="comments-comment-entity" data-id="urn:li:comment:(activity:7001,9002)">
+        <span class="comments-comment-meta__description-title">Piotr Zieliński</span>
+        <div class="comments-comment-item__main-content"><span dir="ltr">Zero-emission zones are the real driver here.</span></div>
+      </article>
+    </div>
+  </div>
+
+  <div class="feed-shared-update-v2" data-urn="urn:li:activity:7002" role="article">
+    <div class="update-components-header"><a href="https://www.linkedin.com/in/anna-nowak-1/">Anna Nowak</a> polubiła to</div>
+    <div class="update-components-actor">
+      <a class="update-components-actor__meta-link" href="https://www.linkedin.com/in/jan-kowalski-42?miniProfileUrn=urn%3Ali%3Afs_miniProfile%3AX">
+        <span class="update-components-actor__title"><span aria-hidden="true">Jan Kowalski</span></span>
+        <span class="update-components-actor__description"><span aria-hidden="true">CTO w DataCorp | Analityka danych</span></span>
+      </a>
+    </div>
+    <div class="feed-shared-inline-show-more-text">
+      <span class="update-components-text"><span dir="ltr">Ten post jest o czymś zupełnie innym: rekrutujemy analityka danych do zespołu w Krakowie.</span></span>
+    </div>
+    <div class="update-components-article">
+      <a href="https://datacorp.example/kariera/analityk">
+        <span class="update-components-article__title">Analityk danych, Kraków</span>
+        <span class="update-components-article__subtitle">datacorp.example</span>
+      </a>
+    </div>
+    <div class="comments-comment-box">
+      <div class="ql-editor" id="editor2" contenteditable="true" role="textbox" data-placeholder="Dodaj komentarz…"></div>
+    </div>
+  </div>
+
+</main>
+
+<!-- Photo lightbox like in the user's screenshot -->
+<div role="dialog" aria-modal="true" class="artdeco-modal feed-shared-image-viewer" id="lightbox">
+  <div class="image-viewer__image"><img src="https://media.licdn.com/dms/image/fleet-expo-banner.png" width="800" height="800" alt=""></div>
+  <div class="feed-shared-update-detail-viewer__right-rail">
+    <div class="update-components-actor">
+      <a href="https://www.linkedin.com/company/volteum/"><span class="update-components-actor__title"><span aria-hidden="true">Volteum</span></span></a>
+      <span>20 min</span>
+    </div>
+    <div class="update-components-text"><span dir="ltr">Volteum is heading to Utrecht. NL<br><br>The Netherlands is our next market. Zero-emission zones in 28+ cities, bijtelling and the WPM reporting obligation are pushing Dutch fleets to electrify.<br><br>If you manage a fleet in the Netherlands, or work with the people who do, come and say hello.</span></div>
+    <button type="button">Pokaż tłumaczenie</button>
+    <div class="comments-comment-box">
+      <div class="ql-editor" id="lightboxEditor" contenteditable="true" role="textbox" data-placeholder="Złóż życzenia…"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // "…więcej" reveals the rest of the post (LinkedIn may render it only after the click).
+  document.getElementById('seeMore').addEventListener('click', () => {
+    const span = document.getElementById('post1text');
+    span.insertAdjacentHTML('beforeend', '<br><br>The Netherlands is our next market. That is the problem Volteum is built for: one view of a mixed fleet.');
+    document.getElementById('seeMore').remove();
+  });
+</script>
+</body>
+</html>

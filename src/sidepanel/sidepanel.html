@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Asystent komentarzy</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Asystent komentarzy</h1>
+    <button type="button" id="settingsToggle" class="icon-button" aria-label="Ustawienia" aria-expanded="false" title="Ustawienia">⚙</button>
+  </header>
+
+  <!-- Main view -->
+  <main id="mainView">
+    <p id="globalNotice" class="notice" hidden></p>
+
+    <!-- Step 1: post -->
+    <section id="postSection" class="step" aria-labelledby="postHeading">
+      <h2 id="postHeading"><span class="step-no">1</span>Post</h2>
+
+      <div id="pendingPost" class="notice switch" role="status" hidden>
+        <span id="pendingPostText"></span>
+        <button type="button" id="switchPost" class="secondary small">Przełącz na ten post</button>
+      </div>
+
+      <div id="emptyPost" class="empty">
+        <p>Kliknij w pole komentarza pod postem na LinkedInie. Panel sam pobierze ten post.</p>
+        <p class="muted">Inna droga: zaznacz tekst posta na stronie albo wklej go poniżej.</p>
+        <textarea id="manualPostText" rows="4" placeholder="Wklej treść posta…"></textarea>
+        <div class="row">
+          <button type="button" id="useSelection" class="secondary">Użyj zaznaczonego tekstu</button>
+          <button type="button" id="useManual" class="secondary">Użyj wklejonego tekstu</button>
+        </div>
+      </div>
+
+      <div id="postCard" class="post" hidden>
+        <p class="post-author"><span id="postAuthor"></span><span id="postReplyBadge" class="badge" hidden>odpowiedź na komentarz</span></p>
+        <blockquote class="post-quote"><p id="postExcerpt" class="post-excerpt"></p></blockquote>
+        <p id="seeMoreRow" class="see-more" hidden>
+          <span class="muted small-text">Post jest skrócony na stronie.</span>
+          <button type="button" id="expandPost" class="link">Rozwiń pełny tekst</button>
+        </p>
+        <p id="postReplyTo" class="post-reply" hidden></p>
+        <details id="postDetails">
+          <summary>Pełny tekst posta (możesz go poprawić)</summary>
+          <textarea id="postTextEdit" rows="8"></textarea>
+          <button type="button" id="reanalyze" class="secondary small">Przeanalizuj ponownie</button>
+        </details>
+        <div id="contextCard" class="context" hidden>
+          <h3>Kontekst</h3>
+          <ul id="contextList"></ul>
+        </div>
+        <div class="row options">
+          <label class="check" id="imagesToggleWrap"><input type="checkbox" id="includeImages"> Uwzględnij grafikę <span id="imageCount"></span></label>
+          <button type="button" id="clearPost" class="link">Wybierz inny post</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 2: understand -->
+    <section id="analysisSection" class="step" aria-labelledby="analysisHeading" hidden>
+      <h2 id="analysisHeading"><span class="step-no">2</span>O czym jest post</h2>
+      <button type="button" id="runAnalysis" class="secondary" hidden>Przetłumacz i podsuń pomysły</button>
+      <div id="analysisStatus" class="status" role="status" aria-live="polite"></div>
+      <div id="translation" class="translation"></div>
+      <p id="imageNote" class="image-note" hidden></p>
+      <div id="ideasWrap" hidden>
+        <h3>Pomysły na komentarz</h3>
+        <p class="muted small-text">Kliknij pomysł, aby wstawić go jako polecenie.</p>
+        <ul id="ideas" class="ideas"></ul>
+      </div>
+    </section>
+
+    <!-- Step 3: write -->
+    <section id="writeSection" class="step" aria-labelledby="writeHeading" hidden>
+      <h2 id="writeHeading"><span class="step-no">3</span>Co chcesz napisać?</h2>
+      <textarea id="instruction" rows="4" placeholder="Po polsku: polecenie („pogratuluj i zapytaj o…”) albo własny szkic. Możesz też wpisać szkic po angielsku do poprawy."></textarea>
+      <div class="row selects">
+        <label>Ton
+          <select id="tone"></select>
+        </label>
+        <label>Długość
+          <select id="length"></select>
+        </label>
+      </div>
+      <div class="row">
+        <button type="button" id="writeComment" class="primary">Napisz komentarz</button>
+        <span class="muted small-text">Ctrl+Enter</span>
+      </div>
+    </section>
+
+    <!-- Step 4: result -->
+    <section id="resultSection" class="step" aria-labelledby="resultHeading" hidden>
+      <h2 id="resultHeading"><span class="step-no">4</span>Komentarz</h2>
+      <div id="resultStatus" class="status" role="status" aria-live="polite"></div>
+      <textarea id="commentText" class="comment" rows="5" aria-label="Komentarz do opublikowania"></textarea>
+
+      <h3>Po polsku</h3>
+      <p id="backTranslation" class="back-translation"></p>
+
+      <div id="notesWrap" hidden>
+        <h3>Uwagi językowe</h3>
+        <ul id="notes" class="notes"></ul>
+      </div>
+
+      <div id="qualityBox" class="quality" hidden>
+        <p id="qualityStatus" class="status" role="status" aria-live="polite"></p>
+        <ul id="qualityIssues" class="issues"></ul>
+        <div class="row">
+          <button type="button" id="makeSpecific" class="secondary small" hidden>Konkretniej</button>
+          <button type="button" id="recheck" class="link" hidden>Sprawdź ponownie</button>
+        </div>
+      </div>
+
+      <div class="row actions">
+        <button type="button" id="insertComment" class="primary">Wstaw pod postem</button>
+        <button type="button" id="copyComment" class="secondary">Kopiuj</button>
+      </div>
+      <p id="insertStatus" class="status" role="status" aria-live="polite"></p>
+
+      <form id="refineForm" class="refine">
+        <label for="refineInput">Popraw</label>
+        <div class="row">
+          <input id="refineInput" type="text" placeholder="np. krócej, bez pytania, cieplej">
+          <button type="submit" class="secondary">Popraw</button>
+        </div>
+      </form>
+    </section>
+
+    <footer id="costLine" class="cost" aria-live="polite"></footer>
+  </main>
+
+  <!-- Settings view -->
+  <form id="settingsView" class="settings" hidden>
+    <p id="settingsIntro" class="notice" hidden>Aby zacząć, wybierz dostawcę i wklej klucz API.</p>
+
+    <fieldset>
+      <legend>Dostawca modelu</legend>
+      <div id="providerOptions" class="radios"></div>
+    </fieldset>
+
+    <label for="apiKey">Klucz API</label>
+    <div class="row">
+      <input id="apiKey" type="password" autocomplete="off" spellcheck="false">
+      <button type="button" id="toggleKey" class="secondary small" aria-pressed="false">Pokaż</button>
+    </div>
+    <p class="muted small-text">Klucz zostaje w tej przeglądarce (pamięć lokalna rozszerzenia) i jest wysyłany tylko do wybranego dostawcy. <a id="keyLink" href="#" target="_blank" rel="noopener">Skąd wziąć klucz</a></p>
+
+    <label for="modelSelect">Model</label>
+    <select id="modelSelect"></select>
+    <input id="modelCustom" type="text" placeholder="Identyfikator modelu" hidden spellcheck="false">
+
+    <label for="effort">Głębokość myślenia</label>
+    <select id="effort"></select>
+
+    <label for="aboutMe">O mnie</label>
+    <textarea id="aboutMe" rows="4" placeholder="Np. CTO w firmie flotowej, 10 lat w e-mobility, piszę konkretnie i bez korpomowy. Model użyje tego tylko tam, gdzie pasuje do posta."></textarea>
+
+    <label for="commentLanguage">Język komentarza</label>
+    <select id="commentLanguage"></select>
+
+    <label class="check"><input type="checkbox" id="autoAnalyze"> Od razu tłumacz post i podsuwaj pomysły</label>
+    <label class="check"><input type="checkbox" id="includeImagesDefault"> Domyślnie uwzględniaj grafikę z posta</label>
+
+    <fieldset class="voice">
+      <legend>Twój styl</legend>
+      <label class="check"><input type="checkbox" id="learnVoice"> Ucz się z komentarzy, które wstawiam lub kopiuję</label>
+      <p id="voiceStats" class="muted small-text"></p>
+      <label for="voiceNotes">Moje preferencje (uczone z poprawek, możesz je zmieniać)</label>
+      <textarea id="voiceNotes" rows="4" placeholder="Np. - Skracaj do jednego zdania, gdy to możliwe."></textarea>
+      <div class="row">
+        <button type="button" id="learnNow" class="secondary small">Ucz się teraz z poprawek</button>
+        <button type="button" id="clearHistory" class="secondary small">Wyczyść historię</button>
+      </div>
+      <p id="voiceStatus" class="status" role="status" aria-live="polite"></p>
+    </fieldset>
+
+    <fieldset class="harmonic">
+      <legend>Harmonic (opcjonalnie)</legend>
+      <label class="check"><input type="checkbox" id="useHarmonic"> Pobieraj dane o firmie i roli autora z Harmonic</label>
+      <label for="harmonicApiKey">Klucz API Harmonic</label>
+      <input id="harmonicApiKey" type="password" autocomplete="off" spellcheck="false">
+      <p class="muted small-text">Do modelu trafiają tylko publiczne fakty: etap, finansowanie, wielkość zespołu, inwestorzy i rola autora. Klucz zostaje w tej przeglądarce i trafia tylko do Harmonic.</p>
+    </fieldset>
+
+    <div class="row">
+      <button type="submit" class="primary">Zapisz ustawienia</button>
+      <button type="button" id="testConnection" class="secondary">Sprawdź połączenie</button>
+    </div>
+    <p id="settingsStatus" class="status" role="status" aria-live="polite"></p>
+  </form>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

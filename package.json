@@ -1,0 +1,20 @@
+{
+  "name": "linkedin-comment-assistant",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Edge/Chromium extension that helps write LinkedIn comments with Claude (PL prompt -> EN comment, post as context)",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/unit/*.test.js",
+    "test:e2e": "node build.mjs && node --test test/e2e/*.test.js",
+    "version": "node scripts/sync-version.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "playwright": "^1.65.0"
+  }
+}
