@@ -1,0 +1,108 @@
+<!doctype html>
+<!--
+  Chat bubble on /feed as seen on real LinkedIn (structure from the user's anonymized
+  probe, 2026-11-09): the legacy messaging markup lives in an OPEN shadow root of
+  div#interop-outlet. The bubble header is deliberately left out (it was not in the
+  probe), so the extension must take the other person's name and profile from their
+  messages ("--other"). Message text and names below are invented.
+  The guard records every way the page could send the message, using composedPath()
+  because events leaving a shadow root are retargeted to the host.
+-->
+<html lang="pl">
+<head><meta charset="utf-8"><title>Feed | LinkedIn (fixture)</title></head>
+<body>
+<div id="root" data-strictmode="true"><main>feed</main></div>
+<div id="interop-outlet" class="theme--light" data-testid="interop-shadowdom"></div>
+
+<template id="bubble">
+  <div>
+    <div id="interop-outlet-main">
+      <div class="application-outlet__overlay-container">
+        <aside id="msg-overlay" class="msg-overlay-container msg-overlay-container-reflow">
+          <div id="ember637" class="msg-convo-wrapper msg-overlay-conversation-bubble msg-overlay-conversation-bubble--is-active">
+            <div class="relative display-flex flex-column flex-grow-1">
+              <div class="msg-overlay-conversation-bubble__content-wrapper relative display-flex flex-column">
+                <div class="display-flex flex-column flex-grow-1">
+                  <div><div class="msg-thread-container msg-thread__thread-actions-tray"></div></div>
+                  <div class="msg-s-message-list-container relative display-flex mbA msg-s-message-list-container--column-reversed">
+                    <div class="msg-s-message-list msg-s-message-list--scroll-buffer full-width scrollable">
+                      <ul class="msg-s-message-list-content list-style-none full-width mbA">
+                        <li class="msg-s-message-list__top-of-list"></li>
+                        <li class="msg-s-message-list__loader hidden"><div class="artdeco-loader"></div></li>
+                        <li class="msg-s-message-list__event clearfix">
+                          <time class="msg-s-message-list__time-heading">PONIEDZIAŁEK</time>
+                          <span class="msg-s-event-listitem--group-a11y-heading visually-hidden">Kasia Inwestor wysłała następujące wiadomości o 10:02</span>
+                          <div class="msg-s-event-listitem msg-s-event-listitem--last-in-group msg-s-event-listitem--other" data-event-urn="urn:li:msg_message:1" data-view-name="message-list-item">
+                            <a class="msg-s-event-listitem__link" href="https://www.linkedin.com/in/kasia-vc-12/"></a>
+                            <div class="msg-s-message-group__meta">
+                              <span class="msg-s-message-group__profile-link msg-s-message-group__name">Kasia Inwestor</span>
+                              <time class="msg-s-message-group__timestamp">10:02</time>
+                            </div>
+                            <div class="msg-s-event-listitem__message-bubble">
+                              <div class="msg-s-event-listitem__actions-container artdeco-card"><button type="button">Reaguj</button></div>
+                              <p class="msg-s-event-listitem__body">Cześć!<br>Czy masz chwilę w czwartek na rozmowę o funduszu?</p>
+                            </div>
+                          </div>
+                        </li>
+                        <li class="msg-s-message-list__event clearfix">
+                          <span class="msg-s-event-listitem--group-a11y-heading visually-hidden">Ja wysłałem następujące wiadomości o 10:05</span>
+                          <div class="msg-s-event-listitem msg-s-event-listitem--last-in-group" data-event-urn="urn:li:msg_message:2" data-view-name="message-list-item">
+                            <a class="msg-s-event-listitem__link" href="https://www.linkedin.com/in/me-myself/"></a>
+                            <div class="msg-s-message-group__meta">
+                              <span class="msg-s-message-group__profile-link msg-s-message-group__name">Ja Użytkownik Testowy</span>
+                              <time class="msg-s-message-group__timestamp">10:05</time>
+                            </div>
+                            <div class="msg-s-event-listitem__message-bubble"><p class="msg-s-event-listitem__body">Hej, chyba tak. O której?</p></div>
+                          </div>
+                        </li>
+                        <li class="msg-s-message-list__event clearfix msg-s-message-list__last-msg-ember646">
+                          <time class="msg-s-message-list__new-message-heading">NOWE</time>
+                          <div class="msg-s-event-listitem msg-s-event-listitem--last-in-group msg-s-event-listitem--other" data-event-urn="urn:li:msg_message:3" data-view-name="message-list-item">
+                            <a class="msg-s-event-listitem__link" href="https://www.linkedin.com/in/kasia-vc-12/"></a>
+                            <div class="msg-s-message-group__meta">
+                              <span class="msg-s-message-group__profile-link msg-s-message-group__name">Kasia Inwestor</span>
+                              <time class="msg-s-message-group__timestamp">10:07</time>
+                            </div>
+                            <div class="msg-s-event-listitem__message-bubble"><p class="msg-s-event-listitem__body">Może 15:00?</p></div>
+                          </div>
+                        </li>
+                      </ul>
+                    </div>
+                  </div>
+                  <form id="msg-form-ember645" class="msg-form msg-form--thread-footer-feature">
+                    <div class="msg-form__msg-content-container msg-form__message-texteditor relative flex-grow-1 display-flex">
+                      <div class="msg-form__msg-content-container--scrollable scrollable relative">
+                        <div class="flex-grow-1 relative">
+                          <div id="shadowEditor" class="msg-form__contenteditable t-14 t-black--light t-normal flex-grow-1 full-height notranslate" role="textbox" contenteditable="true" aria-multiline="true"></div>
+                        </div>
+                      </div>
+                    </div>
+                    <button type="submit" class="msg-form__send-button">Wyślij</button>
+                  </form>
+                </div>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+  const host = document.getElementById('interop-outlet');
+  const shadow = host.attachShadow({ mode: 'open' });
+  shadow.appendChild(document.getElementById('bubble').content.cloneNode(true));
+
+  window.__sent = [];
+  const inForm = (e) => e.composedPath().some((n) => n.classList && n.classList.contains('msg-form'));
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && inForm(e)) { e.preventDefault(); window.__sent.push('enter'); }
+  }, true);
+  document.addEventListener('input', (e) => {
+    if (e.inputType === 'insertParagraph' && inForm(e)) window.__sent.push('insertParagraph');
+  }, true);
+  shadow.querySelector('form').addEventListener('submit', (e) => { e.preventDefault(); window.__sent.push('submit'); });
+</script>
+</body>
+</html>

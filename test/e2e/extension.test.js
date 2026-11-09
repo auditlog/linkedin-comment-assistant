@@ -37,6 +37,14 @@ const COMMENT_REPLY = `<comment>Good luck in Utrecht! Which vehicle data will yo
 - „Mixed fleets” to naturalne określenie floty mieszanej.
 </notes>`;
 
+const MESSAGE_REPLY = `<comment>Hi Maria,
+thanks for the deck. Tuesday at 10:00 works for me.</comment>
+<back_translation>Cześć Maria,
+dzięki za deck. Wtorek o 10:00 mi pasuje.</back_translation>
+<notes>
+- brak uwag
+</notes>`;
+
 const REFINED_REPLY = `<comment>Good luck in Utrecht, see you at the booth!</comment>
 <back_translation>Powodzenia w Utrechcie, do zobaczenia na stoisku!</back_translation>
 <notes>
@@ -113,11 +121,12 @@ async function mockApi(route) {
   const userText = lastUserText(body);
   let reply = 'OK';
   if (userText.includes('<task>check_comment</task>')) {
-    // The first draft "restates the post"; the refined one passes.
-    reply = userText.includes('see you at the booth')
+    // The first comment draft "restates the post"; the refined one and message replies pass.
+    reply = userText.includes('see you at the booth') || userText.includes('<conversation')
       ? '<verdict>ok</verdict>\n<issues></issues>'
       : '<verdict>warn</verdict>\n<issues>\n<issue type="restates_post">Komentarz powtarza informacje z posta o targach.</issue>\n</issues>';
-  } else if (userText.includes('<task>analyze_post</task>')) reply = ANALYSIS_REPLY;
+  } else if (userText.includes('<task>analyze_post</task>') || userText.includes('<task>analyze_conversation</task>')) reply = ANALYSIS_REPLY;
+  else if (userText.includes('<task>write_message</task>')) reply = MESSAGE_REPLY;
   else if (userText.includes('<task>write_comment</task>')) reply = COMMENT_REPLY;
   else if (userText.includes('<feedback>')) reply = REFINED_REPLY;
   else if (userText.includes('<task>learn_voice</task>')) reply = '<preferences>\n- Pisz krócej i bez pytania na końcu.\n</preferences>';
@@ -139,7 +148,19 @@ before(async () => {
     args: [`--disable-extensions-except=${extensionDir}`, `--load-extension=${extensionDir}`],
   });
   const fixture = await readFile(path.join(here, 'fixtures', 'feed.html'), 'utf8');
-  await context.route('https://www.linkedin.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: fixture }));
+  const messagingFixture = await readFile(path.join(here, 'fixtures', 'messaging.html'), 'utf8');
+  const shadowChatFixture = await readFile(path.join(here, 'fixtures', 'messaging-shadow.html'), 'utf8');
+  // LinkedIn 2026-11: the messaging UI runs in an iframe inside the page shell.
+  const iframeShell = `<!doctype html><html><body><div id="root"><main>LinkedIn shell</main>
+    <iframe data-testid="interop-iframe" src="/messaging-frame/thread/2-abc/" style="width:900px;height:700px"></iframe></div></body></html>`;
+  await context.route('https://www.linkedin.com/**', (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    let body = fixture;
+    if (pathname.startsWith('/messaging/iframe-shell/')) body = iframeShell;
+    else if (pathname.startsWith('/feed/shadow-chat/')) body = shadowChatFixture;
+    else if (pathname.startsWith('/messaging/') || pathname.startsWith('/messaging-frame/')) body = messagingFixture;
+    return route.fulfill({ status: 200, contentType: 'text/html', body });
+  });
   await context.route('https://media.licdn.com/**', (route) => route.fulfill({ status: 200, contentType: 'image/png', body: PNG }));
   await context.route('https://api.anthropic.com/**', mockApi);
   await context.route('https://openrouter.ai/**', mockApi);
@@ -427,7 +448,7 @@ test('your voice: hand edits are learned and both examples and preferences reach
   const panel = await context.newPage();
   await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
   await panel.locator('#settingsToggle').click();
-  assert.match(await panel.locator('#voiceStats').textContent(), /Zapamiętane komentarze: 3, w tym poprawionych ręcznie: 3/);
+  assert.match(await panel.locator('#voiceStats').textContent(), /Komentarze: zapamiętane 3, poprawione ręcznie 3/);
   await panel.setViewportSize({ width: 400, height: 900 });
   await snap(panel, '5-settings-voice-harmonic');
   await panel.locator('#learnNow').click();
@@ -500,6 +521,163 @@ test('richer context: author role, shared link and Harmonic data reach the panel
   assert.match(userText, /<shared_link title="Analityk danych, Kraków">/);
   assert.match(userText, /<background>\nAuthor: CTO at DataCorp\.\nCompany: DataCorp/);
   assert.doesNotMatch(userText, /hm-test/, 'the Harmonic key never reaches the model');
+  await panel.close();
+  await page.close();
+});
+
+test('messaging: reply in a conversation, inserted with line breaks and never sent', async () => {
+  await serviceWorker.evaluate(() =>
+    chrome.storage.local.set({
+      history: [],
+      settings: { provider: 'anthropic', apiKeys: { anthropic: 'sk-ant-test' }, localDefaultsApplied: true },
+    }),
+  );
+  const page = await context.newPage();
+  await page.goto('https://www.linkedin.com/messaging/thread/2-abc/');
+  const panel = await context.newPage();
+  await panel.setViewportSize({ width: 400, height: 900 });
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+
+  const htmlBefore = await page.evaluate(() => document.body.outerHTML);
+  const post = await focusPost(page, '#msgEditor');
+  assert.equal(await page.evaluate(() => document.body.outerHTML), htmlBefore, 'reading the conversation changes nothing on the page');
+  assert.equal(post.kind, 'message');
+  assert.equal(post.key, 'msg:thread:2-abc');
+  assert.equal(post.author, 'Maria Founder');
+  assert.equal(post.authorHeadline, 'CEO at FleetCo | Building fleet analytics');
+  assert.deepEqual(post.authorProfile, { url: 'https://www.linkedin.com/in/maria-founder-7/', type: 'person' });
+  assert.equal(
+    post.text,
+    [
+      'Maria Founder: Hi! Could we talk about our seed round next week?',
+      'Ja: Sure, send me the deck.',
+      'Maria Founder: Here it is: fleetco-seed.pdf',
+      'Maria Founder: Does Tuesday work for a call?',
+    ].join('\n'),
+  );
+  assert.equal(post.lastIncoming, 'Does Tuesday work for a call?');
+
+  await panel.locator('#postAuthor', { hasText: 'Rozmowa z: Maria Founder' }).waitFor();
+  assert.equal(await panel.locator('#postHeading').textContent(), '1Rozmowa');
+  assert.match(await panel.locator('#postExcerpt').textContent(), /Ostatnia wiadomość: Does Tuesday work/);
+  await panel.locator('#translation').filter({ hasText: /\S/ }).waitFor({ timeout: 10000 });
+  const analysisReq = apiRequests.findLast((r) => lastUserText(r.body).includes('<task>analyze_conversation</task>'));
+  assert.match(lastUserText(analysisReq.body), /<conversation with="Maria Founder" with_headline="CEO at FleetCo/);
+
+  await panel.locator('#instruction').fill('zaproponuj wtorek 10:00');
+  await panel.locator('#writeComment').click();
+  await panel.waitForFunction(() => !document.getElementById('commentText').readOnly && document.getElementById('commentText').value.startsWith('Hi Maria'));
+  assert.equal(await panel.locator('#resultHeading').textContent(), '4Odpowiedź');
+  assert.equal(await panel.locator('#insertComment').textContent(), 'Wstaw do wiadomości');
+  const writeReq = apiRequests.findLast((r) => lastUserText(r.body).includes('<task>write_message</task>'));
+  assert.match(lastUserText(writeReq.body), /zaproponuj wtorek 10:00/);
+  await panel.locator('#qualityStatus', { hasText: 'Odpowiedź jest konkretna' }).waitFor({ timeout: 10000 });
+
+  await panel.locator('#insertComment').click();
+  await panel.locator('#insertStatus', { hasText: 'Wstawiono do pola wiadomości' }).waitFor();
+  const inserted = await page.locator('#msgEditor').innerText();
+  assert.match(inserted, /^Hi Maria,\n+thanks for the deck\. Tuesday at 10:00 works for me\.$/, 'line break kept');
+  assert.deepEqual(await page.evaluate(() => window.__sent), [], 'nothing was sent');
+
+  const history = await serviceWorker.evaluate(async () => (await chrome.storage.local.get('history')).history);
+  assert.equal(history[0].kind, 'message');
+  assert.equal(history[0].postExcerpt, '', "the other person's messages are not stored");
+  assert.equal(history[0].author, '');
+
+  // The chat bubble is another conversation; with work in progress the panel offers a switch.
+  await page.locator('#bubbleEditor').click();
+  await panel.locator('#pendingPost').waitFor({ state: 'visible', timeout: 5000 });
+  assert.match(await panel.locator('#pendingPostText').textContent(), /Tom Angel/);
+  const bubble = await boundPost();
+  assert.equal(bubble.key, 'msg:urn:li:msg_conversation:bubble-1');
+  assert.equal(bubble.lastIncoming, 'Are you coming to the AI meetup on Thursday?');
+  await snap(panel, '6-messaging');
+  await panel.close();
+  await page.close();
+});
+
+test('messaging in an iframe (LinkedIn 2026-11): bound with its frame, insert and selection reach that frame', async () => {
+  await serviceWorker.evaluate(() =>
+    chrome.storage.local.set({
+      history: [],
+      settings: { provider: 'anthropic', apiKeys: { anthropic: 'sk-ant-test' }, localDefaultsApplied: true },
+    }),
+  );
+  const page = await context.newPage();
+  await page.goto('https://www.linkedin.com/messaging/iframe-shell/');
+  const frame = page.frames().find((f) => f.url().includes('/messaging-frame/'));
+  await frame.waitForSelector('#msgEditor');
+  const panel = await context.newPage();
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+
+  const shellBefore = await page.evaluate(() => document.body.outerHTML);
+  const before = (await boundPost())?.boundAt ?? 0;
+  await frame.locator('#msgEditor').click();
+  let post;
+  for (let i = 0; i < 50 && !(post && post.boundAt !== before); i++) {
+    post = await boundPost();
+    await page.waitForTimeout(100);
+  }
+  assert.equal(post.kind, 'message');
+  assert.equal(post.author, 'Maria Founder');
+  assert.ok(post.frameId > 0, 'the conversation remembers its iframe');
+  assert.equal(await page.evaluate(() => document.body.outerHTML), shellBefore, 'the page shell is unchanged');
+
+  await panel.locator('#postAuthor', { hasText: 'Rozmowa z: Maria Founder' }).waitFor();
+  await panel.locator('#instruction').fill('zaproponuj wtorek 10:00');
+  await panel.locator('#writeComment').click();
+  await panel.waitForFunction(() => !document.getElementById('commentText').readOnly && document.getElementById('commentText').value.startsWith('Hi Maria'));
+  await panel.locator('#insertComment').click();
+  await panel.locator('#insertStatus', { hasText: 'Wstawiono do pola wiadomości' }).waitFor();
+  assert.match(await frame.locator('#msgEditor').innerText(), /^Hi Maria,\n+thanks for the deck/);
+  assert.deepEqual(await frame.evaluate(() => window.__sent), [], 'nothing was sent');
+
+  // Text selected inside the iframe can be used as context too.
+  await frame.evaluate(() => {
+    const body = document.querySelector('.msg-s-event-listitem__body');
+    const range = document.createRange();
+    range.selectNodeContents(body);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  });
+  await panel.locator('#clearPost').click();
+  await page.bringToFront();
+  await panel.locator('#useSelection').click();
+  await panel.locator('#postExcerpt', { hasText: 'Could we talk about our seed round' }).waitFor({ timeout: 5000 });
+  await panel.close();
+  await page.close();
+});
+
+test('chat bubble in a shadow root (real LinkedIn /feed, 2026-11): read, insert, never send', async () => {
+  await serviceWorker.evaluate(() =>
+    chrome.storage.local.set({
+      history: [],
+      settings: { provider: 'anthropic', apiKeys: { anthropic: 'sk-ant-test' }, localDefaultsApplied: true },
+    }),
+  );
+  const page = await context.newPage();
+  await page.goto('https://www.linkedin.com/feed/shadow-chat/');
+  const panel = await context.newPage();
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+
+  const shadowBefore = await page.evaluate(() => document.getElementById('interop-outlet').shadowRoot.innerHTML);
+  const post = await focusPost(page, '#shadowEditor'); // Playwright CSS pierces open shadow roots
+  assert.equal(await page.evaluate(() => document.getElementById('interop-outlet').shadowRoot.innerHTML), shadowBefore, 'nothing changed inside the shadow root');
+  assert.equal(post.kind, 'message');
+  assert.equal(post.author, 'Kasia Inwestor', 'name taken from her messages when the header is unknown');
+  assert.deepEqual(post.authorProfile, { url: 'https://www.linkedin.com/in/kasia-vc-12/', type: 'person' }, 'her profile, not the user own one');
+  assert.equal(post.text, 'Kasia Inwestor: Cześć!\nCzy masz chwilę w czwartek na rozmowę o funduszu?\nJa: Hej, chyba tak. O której?\nKasia Inwestor: Może 15:00?');
+  assert.equal(post.lastIncoming, 'Może 15:00?');
+
+  await panel.locator('#postAuthor', { hasText: 'Rozmowa z: Kasia Inwestor' }).waitFor();
+  await panel.locator('#instruction').fill('potwierdź 15:00');
+  await panel.locator('#writeComment').click();
+  await panel.waitForFunction(() => !document.getElementById('commentText').readOnly && document.getElementById('commentText').value.startsWith('Hi Maria'));
+  await panel.locator('#insertComment').click();
+  await panel.locator('#insertStatus', { hasText: 'Wstawiono do pola wiadomości' }).waitFor();
+  assert.match(await page.locator('#shadowEditor').innerText(), /^Hi Maria,\n+thanks for the deck/);
+  assert.deepEqual(await page.evaluate(() => window.__sent), [], 'nothing was sent');
   await panel.close();
   await page.close();
 });

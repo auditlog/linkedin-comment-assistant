@@ -15,17 +15,28 @@ export const LEARN_AFTER_EDITS = 3;
 export const VOICE_TAGS = ['preferences'];
 
 const normalize = (text) => String(text ?? '').replace(/\s+/g, ' ').trim();
+// Entries from before 0.4.0 have no kind: they are comments.
+const kindOf = (item) => (item?.kind === 'message' ? 'message' : 'comment');
+
+/** Settings fields holding the learned preferences and the last learning time, per kind. */
+export const VOICE_FIELDS = {
+  comment: { notes: 'voiceNotes', learnedAt: 'voiceLearnedAt' },
+  message: { notes: 'messageVoiceNotes', learnedAt: 'messageVoiceLearnedAt' },
+};
 
 /**
  * Build a history entry for a comment the user inserted or copied.
  * @param {{post: object, instruction?: string, generated?: string, final: string, language?: string|null, now?: number}} args
  */
 export function createHistoryEntry({ post, instruction = '', generated = '', final, language = null, now = Date.now() }) {
+  const kind = post?.kind === 'message' ? 'message' : 'comment';
   return {
     at: now,
+    kind,
     postKey: post?.key ?? null,
-    author: post?.author ?? '',
-    postExcerpt: normalize(post?.text).slice(0, 280),
+    // Private conversations: keep only the user's own reply, nothing about the other person.
+    author: kind === 'message' ? '' : post?.author ?? '',
+    postExcerpt: kind === 'message' ? '' : normalize(post?.text).slice(0, 280),
     instruction: normalize(instruction).slice(0, 500),
     generated: String(generated ?? '').trim(),
     final: String(final ?? '').trim(),
@@ -51,8 +62,8 @@ export function addToHistory(history, entry) {
  * @param {Array<object>} history
  * @param {{language?: string|null, count?: number}} [options]
  */
-export function pickExamples(history, { language = null, count = EXAMPLE_COUNT } = {}) {
-  const usable = (history ?? []).filter((item) => item.final);
+export function pickExamples(history, { language = null, count = EXAMPLE_COUNT, kind = 'comment' } = {}) {
+  const usable = (history ?? []).filter((item) => item.final && kindOf(item) === kind);
   const sameLanguage = language ? usable.filter((item) => item.language === language) : [];
   const others = usable.filter((item) => !sameLanguage.includes(item));
   return [...sameLanguage, ...others].slice(0, count);
@@ -64,17 +75,18 @@ export function pickExamples(history, { language = null, count = EXAMPLE_COUNT }
  * @param {{examples?: Array<object>, voiceNotes?: string}} args
  * @returns {string}
  */
-export function buildVoiceBlock({ examples = [], voiceNotes = '' }) {
+export function buildVoiceBlock({ examples = [], voiceNotes = '', kind = 'comment' }) {
   const notes = String(voiceNotes ?? '').trim();
   if (examples.length === 0 && !notes) return '';
+  const what = kind === 'message' ? 'Private messages this user actually sent' : 'Comments this user actually published';
   const parts = ['<user_voice>'];
   if (examples.length) {
     parts.push(
-      "Comments this user actually published (their final wording). Match their tone, length, rhythm and vocabulary. Never copy their sentences, and never reuse facts from these examples in a new comment.",
+      `${what} (their final wording). Match their tone, length, rhythm and vocabulary. Never copy their sentences, and never reuse facts from these examples in a new text.`,
     );
     for (const item of examples) {
-      const about = escapeForTag(item.postExcerpt.slice(0, 160)).replace(/"/g, "'");
-      parts.push(`<example post_excerpt="${about}">\n${escapeForTag(item.final)}\n</example>`);
+      const about = escapeForTag((item.postExcerpt || '').slice(0, 160)).replace(/"/g, "'");
+      parts.push(about ? `<example post_excerpt="${about}">\n${escapeForTag(item.final)}\n</example>` : `<example>\n${escapeForTag(item.final)}\n</example>`);
     }
   }
   if (notes) {
@@ -89,8 +101,8 @@ export function buildVoiceBlock({ examples = [], voiceNotes = '' }) {
  * @param {Array<object>} history
  * @param {number} learnedAt
  */
-export function editsSince(history, learnedAt = 0) {
-  return (history ?? []).filter((item) => item.edited && item.at > (learnedAt || 0));
+export function editsSince(history, learnedAt = 0, kind = 'comment') {
+  return (history ?? []).filter((item) => item.edited && kindOf(item) === kind && item.at > (learnedAt || 0));
 }
 
 /**
@@ -98,8 +110,9 @@ export function editsSince(history, learnedAt = 0) {
  * @param {Array<object>} history
  * @param {{learnVoice?: boolean, voiceLearnedAt?: number}} settings
  */
-export function shouldLearn(history, settings) {
-  return Boolean(settings?.learnVoice) && editsSince(history, settings?.voiceLearnedAt).length >= LEARN_AFTER_EDITS;
+export function shouldLearn(history, settings, kind = 'comment') {
+  const learnedAt = settings?.[VOICE_FIELDS[kind].learnedAt];
+  return Boolean(settings?.learnVoice) && editsSince(history, learnedAt, kind).length >= LEARN_AFTER_EDITS;
 }
 
 /**
@@ -108,8 +121,9 @@ export function shouldLearn(history, settings) {
  * @param {Array<object>} history
  * @param {string} currentNotes
  */
-export function buildLearnMessages(history, currentNotes = '') {
-  const pairs = (history ?? []).filter((item) => item.edited).slice(0, 12);
+export function buildLearnMessages(history, currentNotes = '', kind = 'comment') {
+  const pairs = (history ?? []).filter((item) => item.edited && kindOf(item) === kind).slice(0, 12);
+  const what = kind === 'message' ? 'private LinkedIn message replies' : 'LinkedIn comments';
   const body = pairs
     .map(
       (item, i) =>
@@ -117,7 +131,7 @@ export function buildLearnMessages(history, currentNotes = '') {
     )
     .join('\n');
   const text = `<task>learn_voice</task>
-Below are comment drafts written by an assistant and the versions the user actually published after editing them by hand.
+Below are drafts of ${what} written by an assistant and the versions the user actually used after editing them by hand.
 
 ${body}
 
@@ -125,7 +139,7 @@ ${body}
 ${escapeForTag(String(currentNotes || '').trim()) || '(none yet)'}
 </current_preferences>
 
-Describe how the user changes the drafts, as short writing preferences for future comments. Rules:
+Describe how the user changes the drafts, as short writing preferences for future ${what}. Rules:
 - Only what the edits show, ideally in at least two pairs (e.g. shorter sentences, drops the closing question, more direct opening, avoids certain words). Never guess about the person, their opinions or facts.
 - Keep current preferences that the edits do not contradict; drop or rewrite those they contradict.
 - At most 8 bullets, in Polish, each one line, imperative, e.g. "- Skracaj do jednego zdania, gdy to możliwe."

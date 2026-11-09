@@ -526,11 +526,16 @@ function normalizeForCompare(text) {
 /**
  * Replace the editor's content with `text` in a way LinkedIn's editor registers
  * (so the "Post" button becomes active). Tries execCommand first, then a synthetic paste.
+ *
+ * `lineBreaks: 'soft'` (message boxes): lines are joined with insertLineBreak, the
+ * Shift+Enter equivalent, and no key events are dispatched. In LinkedIn messaging a
+ * plain Enter sends the message, and the extension must never send anything.
  * @param {HTMLElement} editor
  * @param {string} text
+ * @param {{lineBreaks?: 'paragraph'|'soft'}} [options]
  * @returns {boolean} whether the editor now contains the text
  */
-export function insertIntoEditor(editor, text) {
+export function insertIntoEditor(editor, text, { lineBreaks = 'paragraph' } = {}) {
   editor.scrollIntoView({ block: 'center' });
   editor.focus();
   const selectAll = () => {
@@ -545,7 +550,14 @@ export function insertIntoEditor(editor, text) {
   selectAll();
   // execCommand is deprecated but still the most reliable way to fire the
   // beforeinput/input events that rich-text editors (Quill, ProseMirror) listen to.
-  document.execCommand('insertText', false, text);
+  if (lineBreaks === 'soft') {
+    text.split('\n').forEach((line, i) => {
+      if (i > 0) document.execCommand('insertLineBreak');
+      if (line) document.execCommand('insertText', false, line);
+    });
+  } else {
+    document.execCommand('insertText', false, text);
+  }
   if (contains()) return true;
 
   selectAll();

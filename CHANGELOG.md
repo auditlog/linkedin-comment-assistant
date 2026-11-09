@@ -1,5 +1,24 @@
 # Historia zmian
 
+## 0.4.2 (2026-11-09)
+
+- Poprawka: okienka czatu w głównym oknie LinkedIna (np. na `/feed`) są w osadzonym fragmencie strony (shadow DOM). Wtyczka nie widziała kliknięcia w ich pole wiadomości. Teraz rozpoznaje pole także tam i potrafi do niego wstawić tekst.
+- Rozmówca w okienku czatu: gdy nagłówek okienka nie zostanie rozpoznany, imię i profil rozmówcy są brane z jego wiadomości, a nie z pierwszego linku w okienku (który może prowadzić do Twojego profilu).
+
+## 0.4.1 (2026-11-09)
+
+- Poprawka: wiadomości na prawdziwym LinkedInie nie były odczytywane, bo czat działa w osobnej ramce strony (iframe). Skrypt wtyczki działa teraz także w ramkach LinkedIna, a wstawianie i rozwijanie trafia do ramki, z której przyszła rozmowa. Zaznaczony tekst można pobrać także z ramki.
+- Skrypt diagnostyczny (`scripts/diagnose-linkedin.js`) sam wchodzi do ramki z kursorem i podaje jej adres bez parametrów oraz techniczne identyfikatory elementów (`data-testid`).
+
+## 0.4.0 (2026-11-09)
+
+- Wiadomości na LinkedInie: kliknięcie w pole wiadomości (pełna strona `/messaging/` albo okienko czatu) przełącza panel w tryb „Rozmowa”. Do modelu trafia 10 ostatnich wiadomości z oznaczeniem, które są Twoje.
+- Osobny prompt dla prywatnych wiadomości: odpowiedź na ostatnią wiadomość rozmówcy, w jego języku, bez obietnic w Twoim imieniu i bez sztampowych zwrotów („I hope this message finds you well”).
+- Kontrola jakości dla wiadomości: czy odpowiedź odnosi się do ostatniej wiadomości, czy nie składa zobowiązań, których nie było w poleceniu, i czy nie jest sztampowa.
+- Wstawianie do pola wiadomości nic nie wysyła: kolejne linie są wstawiane jako miękkie złamania wiersza (jak Shift+Enter), bez zdarzeń klawisza Enter. Wiadomość wysyłasz przyciskiem LinkedIna.
+- Twój styl osobno dla komentarzy i wiadomości (dwie listy preferencji w ustawieniach). Z rozmów zapisuje się tylko Twoja odpowiedź, bez treści i imienia rozmówcy.
+- Harmonic działa też dla rozmówcy.
+
 ## 0.3.0 (2026-11-09)
 
 - Bez ingerencji w wygląd LinkedIna: zniknął przycisk ✦ Asystent ze strony. Otwarty panel sam pobiera post, w którego polu komentarza klikniesz. „…więcej” wtyczka rozwija tylko na Twoje kliknięcie w panelu. Gdy masz pracę w toku, panel nie przełącza się sam, tylko proponuje przełączenie.

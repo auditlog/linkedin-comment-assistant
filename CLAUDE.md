@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Rozszerzenie Edge/Chrome (Manifest V3), które pomaga pisać komentarze na LinkedInie z Claude: post jest kontekstem, użytkownik pisze polecenie po polsku, model zwraca komentarz w języku posta. Opis dla użytkownika: `README.md`. Uzasadnienie decyzji: `docs/2026-11-09-design.md`. Historia: `CHANGELOG.md`.
+Rozszerzenie Edge/Chrome (Manifest V3), które pomaga pisać komentarze na LinkedInie z Claude: post jest kontekstem, użytkownik pisze polecenie po polsku, model zwraca komentarz w języku posta. Od 0.4.0 to samo dla prywatnych wiadomości (tryb „Rozmowa”). Opis dla użytkownika: `README.md`. Uzasadnienie decyzji: `docs/2026-11-09-design.md`. Historia: `CHANGELOG.md`.
 
 ## Polecenia
 
@@ -25,17 +25,18 @@ Projekt nie ma lintera ani formattera. Skrypty i testy uruchamiające przegląda
 
 Trzy części wtyczki wymieniają wiadomości `lca:*`:
 
-- **Skrypt na stronie** (`src/content/`, bundel IIFE, tylko `www.linkedin.com`) **niczego nie dokłada do strony** (zasada „zero footprint” od 0.3.0, regulamin LinkedIna §8.2). Po fokusie w polu komentarza (z opóźnieniem 350 ms) czyta post (`linkedin-dom.js`) i wysyła `lca:bind`. Na żądanie panelu: `lca:insert` (wstawienie), `lca:expand` (kliknięcie „…więcej” i ponowny odczyt), `lca:getSelection`. Edytory pamięta w mapie token → `WeakRef`; po przerenderowaniu szuka pola po URN posta.
-- **Service worker** (`src/background.js`) zapisuje `boundPost` w `chrome.storage.session`. Panel otwiera ikona lub `Alt+Shift+L` (`_execute_action` + `openPanelOnActionClick`).
+- **Skrypt na stronie** (`src/content/`, bundel IIFE, `www.linkedin.com`, **we wszystkich ramkach**: `all_frames`, `match_about_blank`, `match_origin_as_fallback`, bo czat LinkedIna działa w iframe od 2026-11; okienka czatu na `/feed` są w otwartym shadow DOM `#interop-outlet`, dlatego cel zdarzenia bierze z `composedPath()[0]`, aktywny element z `shadowRoot.activeElement`, a wyszukiwanie pól idzie przez `deepQueryAll`) **niczego nie dokłada do strony** (zasada „zero footprint” od 0.3.0, regulamin LinkedIna §8.2). Po fokusie w polu komentarza (z opóźnieniem 350 ms) czyta post (`linkedin-dom.js`) i wysyła `lca:bind`. Pole wiadomości (`.msg-form`) obsługuje `linkedin-messaging.js`: wysyła rozmowę jako obiekt o tym samym kształcie co post, z `kind: 'message'`, kluczem `msg:…`, rozmówcą jako `author`/`authorProfile` i transkrypcją 10 ostatnich wiadomości w `text` (linie „Ja:” to użytkownik). Na żądanie panelu: `lca:insert` (wstawienie), `lca:expand` (kliknięcie „…więcej” i ponowny odczyt), `lca:getSelection`. Edytory pamięta w mapie token → `WeakRef`; po przerenderowaniu szuka pola po URN posta.
+- **Service worker** (`src/background.js`) zapisuje `boundPost` w `chrome.storage.session` razem z `frameId` ramki, z której przyszedł. Panel wysyła `lca:insert` i `lca:expand` tylko do tej ramki (`chrome.tabs.sendMessage(…, { frameId })`), bo skrypt działa w wielu ramkach i odpowiedź z niewłaściwej mogłaby wygrać. `lca:getSelection` trafia do wszystkich ramek: odpowiada ta z zaznaczeniem, a ramka główna z opóźnieniem zwraca pusty wynik. Panel otwiera ikona lub `Alt+Shift+L` (`_execute_action` + `openPanelOnActionClick`).
 - **Panel boczny** (`src/sidepanel/`, ESM z SDK) śledzi `boundPost` (tryb podążania). Gdy użytkownik ma pracę w toku (polecenie, komentarz, rozmowa), nie przełącza posta sam, tylko pokazuje pasek „Przełącz”. Automatyczna analiza startuje 600 ms po wyborze posta. Wszystkie wywołania API są w panelu, żeby klucze nie trafiały do kontekstu strony.
 
 Model (`src/lib/`):
-- `prompts.js` buduje stały prompt systemowy i bloki posta: `<post>` (z `author_headline`), `<shared_link>`, `<background>` (Harmonic), `<existing_comments>`, `<reply_to>`. Zadania: `analyze_post`, `write_comment`, `check_comment` (`quality.js`), `learn_voice` (`voice.js`).
+- Rodzaj tekstu (`post.kind`: `comment` | `message`) wybiera zadania, etykiety panelu, kontrolę jakości i pamięć stylu. Brak `kind` oznacza komentarz (wpisy sprzed 0.4.0).
+- `prompts.js` buduje stały prompt systemowy i bloki posta: `<post>` (z `author_headline`), `<shared_link>`, `<background>` (Harmonic), `<existing_comments>`, `<reply_to>`. Dla wiadomości blok `<conversation>`. Zadania: `analyze_post`/`analyze_conversation`, `write_comment`/`write_message`, `check_comment` (`quality.js`), `learn_voice` (`voice.js`). Obie odpowiedzi używają tych samych znaczników (`<comment>` to także odpowiedź w wiadomości).
 - Prompt systemowy to lista bloków: stały (`buildSystemPrompt`) i, przy pisaniu komentarza, blok `<user_voice>` (`voice.js`: przykłady Twoich komentarzy i preferencje). Na API Anthropic każdy blok ma własny `cache_control`.
 - Model odpowiada w znacznikach parsowanych przez `tagged.js` (także w trakcie strumienia); `quality.js` czyta `<issue type="…">`.
 - Poprawka kontynuuje tę samą rozmowę: odpowiedź trafia do historii jako niezmienione `message.content`, historię tylko się dopisuje; po błędzie panel usuwa ostatnią wiadomość użytkownika.
 - Po każdej wersji komentarza panel uruchamia w tle `check_comment`; heurystyki z `quality.js` działają też na ręczne zmiany.
-- Historia komentarzy (`voice.js`) leży w `chrome.storage.local` pod kluczem `history` (do 100, jeden wpis na post). Po 3 nowych ręcznie poprawionych komentarzach panel wysyła `learn_voice` i zapisuje `settings.voiceNotes`.
+- Historia (`voice.js`) leży w `chrome.storage.local` pod kluczem `history` (do 100, jeden wpis na post lub rozmowę, z polem `kind`). Przykłady i nauka są osobne dla komentarzy i wiadomości (`VOICE_FIELDS`: `voiceNotes`/`voiceLearnedAt` i `messageVoiceNotes`/`messageVoiceLearnedAt`). Wpis z rozmowy nie zawiera nic o rozmówcy.
 - `harmonic.js` (opcjonalny) pyta Harmonic po adresie profilu autora i skraca odpowiedź do publicznych faktów; czekanie na nie jest ograniczone (3 s przy analizie, 8 s przy komentarzu).
 
 Ustawienia leżą w `chrome.storage.local` pod kluczem `settings` (`settings.js`). Prywatne wartości domyślne przechodzą drogę: `local-config/defaults.json` (poza Gitem) → build (`sanitizeLocalDefaults`, bez kluczy API) → `dist/defaults.json` → panel (`applyLocalDefaults`, raz na profil, flaga `localDefaultsApplied`).
@@ -54,8 +55,9 @@ Ustawienia leżą w `chrome.storage.local` pod kluczem `settings` (`settings.js`
 **LinkedIn**
 - Wtyczka nie publikuje i nie klika przycisków LinkedIna. Jedyny wyjątek to „…więcej” w treści posta (`expandSeeMore`), i to tylko na kliknięcie w panelu. Nie dodawaj automatyzacji, bo zakazuje jej regulamin LinkedIna.
 - Skrypt na stronie nie dokłada elementów, stylów ani atrybutów i nie zmienia wyglądu strony; zmienia ją tylko na wyraźne żądanie z panelu (wstawienie, rozwinięcie). Test e2e porównuje `document.body.outerHTML` przed i po odczycie posta. Nie deklaruj `web_accessible_resources` (LinkedIn wykrywa po nich rozszerzenia).
-- Czytaj tylko post, w którego polu użytkownik kliknął. Masowe czytanie strony (np. import starych komentarzy) to scraping zakazany w §8.2.
-- Gdy odczyt posta przestaje działać, zacznij od list selektorów na górze `src/content/linkedin-dom.js`. Każdą poprawkę odwzoruj w `test/e2e/fixtures/feed.html` i w teście e2e.
+- Czytaj tylko post albo rozmowę, w której polu użytkownik kliknął (rozmowa: najwyżej `MAX_MESSAGES` = 10). Masowe czytanie strony (np. import starych komentarzy, przeglądanie skrzynki) to scraping zakazany w §8.2.
+- Wiadomości nigdy nie są wysyłane. Do pól wiadomości wstawiaj tylko przez `insertIntoEditor(…, { lineBreaks: 'soft' })` (`insertLineBreak` między liniami). `execCommand` nie wywołuje zdarzeń klawiszy ani `beforeinput`, ale `insertParagraph` daje zdarzenie `input`, które czat LinkedIna może potraktować jak Enter. Strażnik w `test/e2e/fixtures/messaging.html` rejestruje Enter, `input` typu `insertParagraph` i wysłanie formularza.
+- Gdy odczyt posta albo rozmowy przestaje działać, poproś użytkownika o wynik `scripts/diagnose-linkedin.js` (README, „Gdy wtyczka źle odczytuje stronę”): anonimowy szkielet strony, który sam wchodzi do ramki z kursorem. Potem popraw listy selektorów w `src/content/linkedin-dom.js` lub `linkedin-messaging.js`. Wyniki leżą w `.cache/` (poza Gitem). Każdą poprawkę odwzoruj w `test/e2e/fixtures/feed.html` i w teście e2e.
 - Testy e2e sprawdzają mechanikę na uproszczonej atrapie, nie na prawdziwym LinkedInie. Mów o tym wprost, gdy raportujesz wyniki.
 
 **Claude API**

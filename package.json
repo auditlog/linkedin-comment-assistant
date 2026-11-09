@@ -1,6 +1,6 @@
 {
   "name": "linkedin-comment-assistant",
-  "version": "0.3.0",
+  "version": "0.4.2",
   "private": true,
   "description": "Edge/Chromium extension that helps write LinkedIn comments with Claude (PL prompt -> EN comment, post as context)",
   "type": "module",

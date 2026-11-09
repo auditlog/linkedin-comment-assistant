@@ -40,6 +40,7 @@ import {
   shouldLearn,
   buildLearnMessages,
   VOICE_TAGS,
+  VOICE_FIELDS,
 } from '../lib/voice.js';
 import { heuristicIssues, buildCheckMessages, parseIssues, buildSpecificFeedback, CHECK_TAGS } from '../lib/quality.js';
 import { fetchHarmonicContext, formatBackground, formatMoney } from '../lib/harmonic.js';
@@ -126,7 +127,7 @@ function addCost(message) {
   $('costLine').textContent =
     usd == null
       ? `Model: ${label}.`
-      : `Model: ${label}. Koszt dla tego posta: ${formatCost(state.postCostUsd)} (szacunek).`;
+      : `Model: ${label}. Koszt dla ${KIND_LABELS[postKind()].costScope}: ${formatCost(state.postCostUsd)} (szacunek).`;
 }
 
 // --- post -------------------------------------------------------------------
@@ -154,8 +155,10 @@ function showPendingPost(post) {
   banner.hidden = !post;
   if (post) {
     const who = post.author || 'inny autor';
-    const start = (post.text || '').slice(0, 60);
-    $('pendingPostText').textContent = `Kliknięto pole pod innym postem: ${who}${start ? ` („${start}${post.text.length > 60 ? '…' : ''}”)` : ''}.`;
+    const where = postKind(post) === 'message' ? 'w innej rozmowie' : 'pod innym postem';
+    const sample = postKind(post) === 'message' ? post.lastIncoming || '' : post.text || '';
+    const excerpt = sample.slice(0, 60);
+    $('pendingPostText').textContent = `Kliknięto pole ${where}: ${who}${excerpt ? ` („${excerpt}${sample.length > 60 ? '…' : ''}”)` : ''}.`;
   }
 }
 
@@ -189,6 +192,50 @@ function setPost(post) {
   }
 }
 
+const KIND_LABELS = {
+  comment: {
+    post: 'Post',
+    details: 'Pełny tekst posta (możesz go poprawić)',
+    analysis: 'O czym jest post',
+    write: 'Co chcesz napisać?',
+    result: 'Komentarz',
+    insert: 'Wstaw pod postem',
+    ideas: 'Pomysły na komentarz',
+    writeButton: 'Napisz komentarz',
+    clear: 'Wybierz inny post',
+    costScope: 'tego posta',
+  },
+  message: {
+    post: 'Rozmowa',
+    details: 'Ostatnie wiadomości (możesz je poprawić)',
+    analysis: 'O czym jest rozmowa',
+    write: 'Co chcesz odpisać?',
+    result: 'Odpowiedź',
+    insert: 'Wstaw do wiadomości',
+    ideas: 'Pomysły na odpowiedź',
+    writeButton: 'Napisz odpowiedź',
+    clear: 'Wybierz inną rozmowę',
+    costScope: 'tej rozmowy',
+  },
+};
+
+// Length labels must match what the prompt asks for (see LENGTHS and MESSAGE_LENGTHS in prompts.js).
+const MESSAGE_LENGTH_LABELS = {
+  short: { label: 'Krótka (1–3 zdania)' },
+  medium: { label: 'Średnia (akapit)' },
+  long: { label: 'Dłuższa (dwa akapity)' },
+};
+
+function renderKindLabels(post) {
+  const kind = postKind(post);
+  const labels = KIND_LABELS[kind];
+  for (const el of document.querySelectorAll('[data-label]')) {
+    const text = labels[el.dataset.label];
+    if (text) el.textContent = text;
+  }
+  fillSelect($('length'), kind === 'message' ? MESSAGE_LENGTH_LABELS : LENGTHS, $('length').value || state.settings.length);
+}
+
 function renderPost() {
   const post = state.post;
   const hasPost = Boolean(post);
@@ -198,8 +245,16 @@ function renderPost() {
   $('writeSection').hidden = !hasPost;
   if (!hasPost) return;
 
-  $('postAuthor').textContent = post.author || (post.manual ? 'Post wklejony ręcznie' : 'Autor nieznany');
-  $('postExcerpt').textContent = post.text || 'Nie udało się odczytać treści posta. Rozwiń „Pełny tekst posta” i wklej ją ręcznie.';
+  renderKindLabels(post);
+  if (postKind(post) === 'message') {
+    $('postAuthor').textContent = `Rozmowa z: ${post.author || 'nieznany rozmówca'}`;
+    $('postExcerpt').textContent = post.lastIncoming
+      ? `Ostatnia wiadomość: ${post.lastIncoming}`
+      : post.text || 'Nie udało się odczytać rozmowy. Rozwiń „Ostatnie wiadomości” i wklej je ręcznie.';
+  } else {
+    $('postAuthor').textContent = post.author || (post.manual ? 'Post wklejony ręcznie' : 'Autor nieznany');
+    $('postExcerpt').textContent = post.text || 'Nie udało się odczytać treści posta. Rozwiń „Pełny tekst posta” i wklej ją ręcznie.';
+  }
   $('postReplyBadge').hidden = !post.replyTo;
   $('postReplyTo').hidden = !post.replyTo;
   if (post.replyTo) {
@@ -293,7 +348,7 @@ function renderContext() {
   const post = state.post;
   const items = [];
   if (post) {
-    if (post.authorHeadline) items.push(`Autor: ${post.authorHeadline}`);
+    if (post.authorHeadline) items.push(`${postKind(post) === 'message' ? 'Rozmówca' : 'Autor'}: ${post.authorHeadline}`);
     if (post.linkPreview?.title) items.push(`Udostępniony link: ${post.linkPreview.title}`);
     const others = post.existingComments || [];
     if (others.length) {
@@ -305,7 +360,7 @@ function renderContext() {
     if (h.status === 'error') items.push(`Harmonic: ${h.error}`);
     if (h.status === 'done') {
       if (h.person && (h.person.title || h.person.headline)) {
-        items.push(`Rola autora (Harmonic): ${h.person.title ? `${h.person.title}${h.person.company ? `, ${h.person.company}` : ''}` : h.person.headline}`);
+        items.push(`Rola ${postKind(post) === 'message' ? 'rozmówcy' : 'autora'} (Harmonic): ${h.person.title ? `${h.person.title}${h.person.company ? `, ${h.person.company}` : ''}` : h.person.headline}`);
       }
       if (h.company) {
         const c = h.company;
@@ -517,7 +572,7 @@ async function refine(event) {
 function currentIssues() {
   const comment = $('commentText').value.trim();
   const fromModel = state.check.checkedText === comment ? state.check.issues : [];
-  const heuristics = heuristicIssues(comment, state.post?.text);
+  const heuristics = heuristicIssues(comment, state.post?.text, { kind: postKind() });
   // Model findings first; drop a heuristic finding when the model reported the same type.
   const modelTypes = new Set(fromModel.map((issue) => issue.type));
   return [...fromModel, ...heuristics.filter((issue) => !modelTypes.has(issue.type))];
@@ -539,7 +594,13 @@ function renderQuality() {
   } else if (status === 'error' && !stale) {
     setStatus($('qualityStatus'), `Nie udało się sprawdzić komentarza: ${state.check.error}`, 'error');
   } else if (status === 'ok' && !stale) {
-    setStatus($('qualityStatus'), '✓ Komentarz jest konkretny: nie powtarza posta i nie brzmi ogólnikowo.', 'ok');
+    setStatus(
+      $('qualityStatus'),
+      postKind() === 'message'
+        ? '✓ Odpowiedź jest konkretna i odnosi się do ostatniej wiadomości.'
+        : '✓ Komentarz jest konkretny: nie powtarza posta i nie brzmi ogólnikowo.',
+      'ok',
+    );
   } else {
     setStatus($('qualityStatus'), stale ? 'Tekst zmieniony po sprawdzeniu.' : '');
   }
@@ -597,10 +658,17 @@ async function makeSpecific() {
 
 // --- your voice -------------------------------------------------------------
 
-/** System blocks for writing a comment: static prompt (cached) + the user's voice. */
+/** "comment" or "message" (private conversation, since 0.4.0). */
+function postKind(post = state.post) {
+  return post?.kind === 'message' ? 'message' : 'comment';
+}
+
+/** System blocks for writing: static prompt (cached) + the user's voice for this kind of text. */
 function writingSystem() {
-  const examples = state.settings.learnVoice ? pickExamples(state.history, { language: state.postLanguage }) : [];
-  return [buildSystemPrompt(state.settings), buildVoiceBlock({ examples, voiceNotes: state.settings.voiceNotes })];
+  const kind = postKind();
+  const examples = state.settings.learnVoice ? pickExamples(state.history, { language: state.postLanguage, kind }) : [];
+  const voiceNotes = state.settings[VOICE_FIELDS[kind].notes];
+  return [buildSystemPrompt(state.settings), buildVoiceBlock({ examples, voiceNotes, kind })];
 }
 
 async function recordHistory(finalText) {
@@ -614,33 +682,40 @@ async function recordHistory(finalText) {
   });
   state.history = addToHistory(state.history, entry);
   await chrome.storage.local.set({ history: state.history });
-  if (shouldLearn(state.history, state.settings)) learnVoice({ statusEl: $('insertStatus'), append: true });
+  if (shouldLearn(state.history, state.settings, entry.kind)) {
+    learnVoice({ statusEl: $('insertStatus'), append: true, kinds: [entry.kind] });
+  }
 }
 
-/** Summarize the user's edits into preferences (settings.voiceNotes). */
-async function learnVoice({ statusEl, append = false } = {}) {
+/** Summarize the user's edits into preferences, separately for comments and messages. */
+async function learnVoice({ statusEl, append = false, kinds = ['comment', 'message'] } = {}) {
   if (state.learning) return;
-  const edited = state.history.filter((item) => item.edited);
-  if (edited.length === 0) {
-    setStatus(statusEl, 'Brak poprawionych komentarzy do nauki. Wtyczka uczy się z komentarzy, które zmienisz ręcznie przed wstawieniem.', 'error');
+  const todo = kinds.filter((kind) => state.history.some((item) => item.edited && (item.kind || 'comment') === kind));
+  if (todo.length === 0) {
+    setStatus(statusEl, 'Brak poprawionych tekstów do nauki. Wtyczka uczy się z komentarzy i wiadomości, które zmienisz ręcznie przed wstawieniem.', 'error');
     return;
   }
   if (validateConfig(config())) return;
   state.learning = true;
   const note = (text, kind) => setStatus(statusEl, append && statusEl.textContent ? `${statusEl.textContent} ${text}` : text, kind);
+  const done = [];
   try {
-    const { text, message } = await streamCompletion(config(), {
-      system: buildSystemPrompt(state.settings),
-      messages: buildLearnMessages(state.history, state.settings.voiceNotes),
-    });
-    const preferences = parseTagged(text, VOICE_TAGS).preferences;
-    if (!preferences) throw new Error('Model nie zwrócił listy preferencji.');
-    state.settings = mergeSettings({ ...state.settings, voiceNotes: preferences, voiceLearnedAt: Date.now() });
-    await saveSettings(chrome.storage.local, state.settings);
-    if (!$('settingsView').hidden) $('voiceNotes').value = preferences;
+    for (const kind of todo) {
+      const fields = VOICE_FIELDS[kind];
+      const { text, message } = await streamCompletion(config(), {
+        system: buildSystemPrompt(state.settings),
+        messages: buildLearnMessages(state.history, state.settings[fields.notes], kind),
+      });
+      const preferences = parseTagged(text, VOICE_TAGS).preferences;
+      if (!preferences) throw new Error('Model nie zwrócił listy preferencji.');
+      state.settings = mergeSettings({ ...state.settings, [fields.notes]: preferences, [fields.learnedAt]: Date.now() });
+      await saveSettings(chrome.storage.local, state.settings);
+      if (!$('settingsView').hidden) $(fields.notes).value = preferences;
+      addCost(message);
+      done.push(kind === 'message' ? 'wiadomości' : 'komentarzy');
+    }
     renderVoiceStats();
-    addCost(message);
-    note('Zaktualizowano Twoje preferencje stylu (Ustawienia → Twój styl).', 'ok');
+    note(`Zaktualizowano Twoje preferencje stylu dla: ${done.join(' i ')} (Ustawienia → Twój styl).`, 'ok');
   } catch (error) {
     note(`Nie udało się zaktualizować preferencji stylu: ${describeError(error, config()) || error.message}`, 'error');
   } finally {
@@ -649,18 +724,23 @@ async function learnVoice({ statusEl, append = false } = {}) {
 }
 
 function renderVoiceStats() {
-  const total = state.history.length;
-  const edited = state.history.filter((item) => item.edited).length;
-  const waiting = editsSince(state.history, state.settings.voiceLearnedAt).length;
-  $('voiceStats').textContent = total
-    ? `Zapamiętane komentarze: ${total}, w tym poprawionych ręcznie: ${edited}. Nowe poprawki od ostatniej nauki: ${waiting}.`
-    : 'Brak zapamiętanych komentarzy. Pojawią się po pierwszym „Wstaw pod postem” albo „Kopiuj”.';
-  $('learnNow').disabled = edited === 0;
-  $('clearHistory').disabled = total === 0;
+  const line = (kind, label) => {
+    const items = state.history.filter((item) => (item.kind || 'comment') === kind);
+    const edited = items.filter((item) => item.edited).length;
+    const waiting = editsSince(state.history, state.settings[VOICE_FIELDS[kind].learnedAt], kind).length;
+    return items.length
+      ? `${label}: zapamiętane ${items.length}, poprawione ręcznie ${edited}, nowe poprawki od ostatniej nauki ${waiting}.`
+      : `${label}: brak.`;
+  };
+  $('voiceStats').textContent = state.history.length
+    ? `${line('comment', 'Komentarze')} ${line('message', 'Wiadomości')}`
+    : 'Brak zapamiętanych tekstów. Pojawią się po pierwszym „Wstaw” albo „Kopiuj”.';
+  $('learnNow').disabled = !state.history.some((item) => item.edited);
+  $('clearHistory').disabled = state.history.length === 0;
 }
 
 async function clearHistory() {
-  if (!window.confirm('Usunąć wszystkie zapamiętane komentarze? Preferencje stylu zostaną.')) return;
+  if (!window.confirm('Usunąć wszystkie zapamiętane komentarze i wiadomości? Preferencje stylu zostaną.')) return;
   state.history = [];
   await chrome.storage.local.set({ history: [] });
   renderVoiceStats();
@@ -685,23 +765,29 @@ async function insertComment() {
   if (!text || !post || post.tabId == null) return;
   let response = null;
   try {
-    response = await chrome.tabs.sendMessage(post.tabId, {
-      type: 'lca:insert',
-      editorToken: post.editorToken,
-      postKey: post.key,
-      text,
-    });
+    // Only the frame the post or conversation came from (messaging is in an iframe).
+    response = await chrome.tabs.sendMessage(
+      post.tabId,
+      { type: 'lca:insert', editorToken: post.editorToken, postKey: post.key, text },
+      { frameId: post.frameId ?? 0 },
+    );
   } catch {
     response = { ok: false, reason: 'tab-unreachable' };
   }
   if (response?.ok) {
-    setStatus($('insertStatus'), 'Wstawiono pod postem. Przeczytaj go jeszcze raz na LinkedInie i kliknij „Opublikuj”.', 'ok');
+    setStatus(
+      $('insertStatus'),
+      postKind() === 'message'
+        ? 'Wstawiono do pola wiadomości. Przeczytaj ją jeszcze raz na LinkedInie i wyślij przyciskiem LinkedIna.'
+        : 'Wstawiono pod postem. Przeczytaj go jeszcze raz na LinkedInie i kliknij „Opublikuj”.',
+      'ok',
+    );
     await recordHistory(text);
     return;
   }
   // Fallback: clipboard, with a precise reason.
   const reasons = {
-    'editor-missing': 'Pole komentarza pod tym postem zniknęło (LinkedIn przeładował post albo karta jest zamknięta).',
+    'editor-missing': 'Pole tekstowe zniknęło (LinkedIn przeładował post lub rozmowę albo karta jest zamknięta).',
     'insert-failed': 'LinkedIn nie przyjął wstawionego tekstu.',
     'tab-unreachable': 'Karta z postem jest zamknięta albo została przeładowana.',
   };
@@ -758,6 +844,7 @@ function renderSettingsForm() {
   $('useHarmonic').checked = s.useHarmonic;
   $('harmonicApiKey').value = s.harmonicApiKey;
   $('voiceNotes').value = s.voiceNotes;
+  $('messageVoiceNotes').value = s.messageVoiceNotes;
   setStatus($('voiceStatus'), '');
   renderVoiceStats();
   setStatus($('settingsStatus'), '');
@@ -801,6 +888,7 @@ function readSettingsForm() {
     useHarmonic: $('useHarmonic').checked,
     harmonicApiKey: $('harmonicApiKey').value.trim(),
     voiceNotes: $('voiceNotes').value.trim(),
+    messageVoiceNotes: $('messageVoiceNotes').value.trim(),
   });
 }
 
@@ -848,11 +936,11 @@ async function expandPost() {
   const notice = $('globalNotice');
   let response = null;
   try {
-    response = await chrome.tabs.sendMessage(post.tabId, {
-      type: 'lca:expand',
-      editorToken: post.editorToken,
-      postKey: post.key,
-    });
+    response = await chrome.tabs.sendMessage(
+      post.tabId,
+      { type: 'lca:expand', editorToken: post.editorToken, postKey: post.key },
+      { frameId: post.frameId ?? 0 },
+    );
   } catch {
     response = null;
   }
@@ -958,7 +1046,7 @@ async function init() {
     showSettings(false);
     if (state.post && !state.post.manual && next.key === state.post.key) {
       // Same post focused again: keep translation, draft and result; just update the target editor.
-      state.post = { ...state.post, tabId: next.tabId, editorToken: next.editorToken };
+      state.post = { ...state.post, tabId: next.tabId, frameId: next.frameId, editorToken: next.editorToken };
       showPendingPost(null);
       renderPost();
       return;

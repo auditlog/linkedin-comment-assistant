@@ -6,10 +6,10 @@
 // - a model check (<task>check_comment</task>, see buildCheckMessages) after each draft.
 // The check only warns; inserting stays the user's decision.
 
-import { escapeForTag, buildPostBlock } from './prompts.js';
+import { escapeForTag, buildPostBlock, buildConversationBlock } from './prompts.js';
 
 export const CHECK_TAGS = ['verdict', 'issues'];
-export const ISSUE_TYPES = ['restates_post', 'generic', 'ai_pattern', 'unsupported_claim', 'language'];
+export const ISSUE_TYPES = ['restates_post', 'generic', 'ai_pattern', 'unsupported_claim', 'language', 'off_target', 'commitment'];
 
 // Phrases that make a comment portable to any post or read as AI-written.
 // Word boundaries are Unicode-aware on purpose: JavaScript's \b and \w only know ASCII,
@@ -41,6 +41,16 @@ const AI_PHRASES = [
   'w dzisiejszych czasach',
   'kluczow\\p{L}+',
 ].map(phrase);
+// Private-message clichés (checked only for messages).
+const DM_PHRASES = [
+  'i hope (?:this|my) (?:message|note|email) finds you(?: well)?',
+  "i hope you(?:'re| are) (?:doing )?well",
+  'i wanted to reach out',
+  'i came across your profile',
+  'looking forward to connecting',
+  'mam nadzieję, że (?:u ciebie|u pana|u pani)? ?wszystko (?:w porządku|dobrze)',
+  'mam nadzieję, że ta wiadomość',
+].map(phrase);
 const EMOJI = /\p{Extended_Pictographic}/u;
 const STOPWORDS = new Set(
   'the and for with that this from your you our are was were will have has into about they them their what when which while there here then than also just very more most such only over a an of to in on at is it be as by or we i my me so if not no but can its'.split(' '),
@@ -59,9 +69,10 @@ function contentWords(text) {
  * Instant checks without the model.
  * @param {string} comment
  * @param {string} postText
+ * @param {{kind?: 'comment'|'message'}} [options]
  * @returns {Array<{type: string, message: string}>}
  */
-export function heuristicIssues(comment, postText = '') {
+export function heuristicIssues(comment, postText = '', { kind = 'comment' } = {}) {
   const text = String(comment ?? '').trim();
   if (!text) return [];
   const issues = [];
@@ -73,6 +84,12 @@ export function heuristicIssues(comment, postText = '') {
   if (ai.length) {
     issues.push({ type: 'ai_pattern', message: `Zwroty typowe dla tekstów AI: „${ai.join('”, „')}”.` });
   }
+  if (kind === 'message') {
+    const cliches = DM_PHRASES.map((re) => text.match(re)?.[0]).filter(Boolean);
+    if (cliches.length) {
+      issues.push({ type: 'generic', message: `Sztampowy zwrot z wiadomości: „${cliches.join('”, „')}”.` });
+    }
+  }
   const format = [];
   if (text.includes('—')) format.push('myślnik „—”');
   if (/(^|\s)#[\p{L}\d_]+/u.test(text)) format.push('hashtag');
@@ -81,6 +98,8 @@ export function heuristicIssues(comment, postText = '') {
   if (format.length) issues.push({ type: 'ai_pattern', message: `Elementy, które rzucają się w oczy jako AI: ${format.join(', ')}.` });
 
   // Restating: almost every content word of a short comment already appears in the post.
+  // Not for messages: quoting the conversation is normal there.
+  if (kind === 'message') return issues;
   const words = contentWords(text);
   const postWords = new Set(contentWords(postText));
   if (words.length >= 5 && postWords.size) {
@@ -97,6 +116,7 @@ export function heuristicIssues(comment, postText = '') {
  * @param {{post: object, comment: string, instruction?: string}} args
  */
 export function buildCheckMessages({ post, comment, instruction = '' }) {
+  if (post.kind === 'message') return buildMessageCheckMessages({ post, comment, instruction });
   const text = `<task>check_comment</task>
 ${buildPostBlock(post)}
 
@@ -119,6 +139,35 @@ Answer in exactly this format, each reason in Polish, one short sentence quoting
 <verdict>ok</verdict> or <verdict>warn</verdict>
 <issues>
 <issue type="restates_post">…</issue>
+</issues>
+Leave <issues></issues> empty when the verdict is ok.`;
+  return [{ role: 'user', content: text }];
+}
+
+function buildMessageCheckMessages({ post, comment, instruction }) {
+  const text = `<task>check_comment</task>
+${buildConversationBlock(post)}
+
+<user_input>
+${escapeForTag(String(instruction).trim()) || '(empty)'}
+</user_input>
+
+<comment_to_check>
+${escapeForTag(String(comment).trim())}
+</comment_to_check>
+
+This is a reply the user is about to send in a private LinkedIn conversation. Report only real problems:
+- off_target: it does not respond to what the other person wrote last (e.g. ignores their question).
+- commitment: it commits the user to something not in <user_input> (a meeting, date, price, introduction, decision).
+- unsupported_claim: it states facts about the user that are not in <user_input> or <about_user>.
+- generic: it could be sent unchanged to anyone, or uses message clichés.
+- ai_pattern: it reads as AI-written.
+- language: a grammar or wording error in the reply's language.
+
+Answer in exactly this format, each reason in Polish, one short sentence quoting the problematic fragment where useful:
+<verdict>ok</verdict> or <verdict>warn</verdict>
+<issues>
+<issue type="off_target">…</issue>
 </issues>
 Leave <issues></issues> empty when the verdict is ok.`;
   return [{ role: 'user', content: text }];

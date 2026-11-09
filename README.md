@@ -8,6 +8,8 @@ Rozszerzenie do Microsoft Edge (działa też w Chrome), które pomaga pisać kom
 4. **sprawdza komentarz przed wstawieniem**: ostrzega, gdy tylko powtarza post albo brzmi ogólnikowo;
 5. **wstawia komentarz w pole pod właściwym postem**, nawet jeśli feed się w międzyczasie przewinął.
 
+To samo działa w **wiadomościach**: wtyczka tłumaczy ostatnie wiadomości rozmówcy, podsuwa pomysły na odpowiedź i wstawia ją do pola wiadomości, niczego nie wysyłając.
+
 Komentarz zawsze publikujesz Ty, przyciskiem LinkedIna. Model to Claude Sonnet 5.5 albo Opus 5.5, przez API Anthropic albo przez OpenRouter.
 
 Historia zmian: [`CHANGELOG.md`](CHANGELOG.md). Decyzje projektowe: [`docs/2026-11-09-design.md`](docs/2026-11-09-design.md).
@@ -64,6 +66,18 @@ Przy odpowiedzi na komentarz kliknij w pole odpowiedzi. Asystent weźmie pod uwa
 
 Gdy masz już w panelu polecenie albo komentarz, a klikniesz pole pod innym postem, panel nie przełączy się sam. Pokaże pasek z przyciskiem **Przełącz na ten post**.
 
+### Wiadomości
+
+Kliknij w pole wiadomości w rozmowie, na pełnej stronie wiadomości albo w okienku czatu w prawym dolnym rogu. Panel przełączy się w tryb **Rozmowa**: pokaże, z kim rozmawiasz, ostatnią wiadomość, jej tłumaczenie i pomysły na odpowiedź.
+
+- Do modelu trafia 10 ostatnich wiadomości z tej rozmowy. Twoje są oznaczone jako „Ja”. Możesz je poprawić w polu **Ostatnie wiadomości**.
+- Odpowiedź powstaje w języku rozmówcy i odnosi się do jego ostatniej wiadomości. Model nie umawia spotkań, terminów ani cen w Twoim imieniu, jeśli o to nie poprosisz.
+- **Wstaw do wiadomości** wkłada tekst do pola i nic nie wysyła. Kolejne linie są miękkimi złamaniami wiersza (jak Shift+Enter), bez naciskania Enter. Wiadomość wysyłasz przyciskiem LinkedIna.
+- Twój styl w wiadomościach uczy się osobno od komentarzy.
+- Gdy wtyczka nie rozpozna nagłówka okienka czatu, imię i profil rozmówcy bierze z jego wiadomości wśród 10 ostatnich.
+
+LinkedIn pokazuje wiadomości na dwa sposoby i wtyczka obsługuje oba: pełna strona `/messaging/` działa w osobnej ramce (iframe), a okienka czatu w głównym oknie są w osadzonym fragmencie strony (shadow DOM). Stan na wersję 0.4.2: odczyt i wstawianie działają na atrapach zbudowanych według struktury prawdziwego LinkedIna, a na samym LinkedInie czekają na sprawdzenie. Jeśli coś nie działa, przygotuj wynik sondy (niżej, „Gdy wtyczka źle odczytuje stronę”).
+
 Karta **Kontekst** w kroku 1 pokazuje, co jeszcze trafia do modelu: opis autora, podlinkowany artykuł, liczbę komentarzy innych osób i (opcjonalnie) dane z Harmonic.
 
 Gdy wtyczka źle odczyta post (LinkedIn często zmienia budowę strony), rozwiń **Pełny tekst posta** i popraw treść. Możesz też zaznaczyć tekst posta myszką i kliknąć **Użyj zaznaczonego tekstu**.
@@ -78,8 +92,8 @@ Gdy wtyczka źle odczyta post (LinkedIn często zmienia budowę strony), rozwiń
 | Język komentarza | Domyślnie język posta, do wyboru angielski albo polski. |
 | Od razu tłumacz post | Po wybraniu posta od razu przychodzą tłumaczenie i pomysły. Po wyłączeniu robisz to przyciskiem. |
 | Grafika z posta | Obraz trafia do modelu. Przydaje się, gdy na grafice są daty, miejsca albo nazwiska. |
-| Twój styl | Wtyczka zapamiętuje lokalnie komentarze, które wstawiasz lub kopiujesz, i pokazuje modelowi ostatnie jako wzór. Po 3 komentarzach poprawionych ręcznie uczy się listy Twoich preferencji, którą możesz edytować. „Wyczyść historię” usuwa zapamiętane komentarze. |
-| Harmonic | Po wpisaniu klucza API Harmonic panel pokazuje etap, finansowanie, wielkość zespołu i inwestorów firmy autora oraz jego rolę. |
+| Twój styl | Wtyczka zapamiętuje lokalnie komentarze i odpowiedzi w wiadomościach, które wstawiasz lub kopiujesz, i pokazuje modelowi ostatnie jako wzór. Po 3 tekstach poprawionych ręcznie uczy się listy Twoich preferencji, osobno dla komentarzy i wiadomości. Obie listy możesz edytować. „Wyczyść historię” usuwa zapamiętane teksty. |
+| Harmonic | Po wpisaniu klucza API Harmonic panel pokazuje etap, finansowanie, wielkość zespołu i inwestorów firmy autora (albo rozmówcy) oraz jego rolę. |
 
 Ton i długość komentarza wybierasz w panelu przy każdym komentarzu. Wtyczka zapamiętuje ostatni wybór.
 
@@ -123,10 +137,12 @@ Według cennika Anthropic jeden komentarz razem z analizą posta i kontrolą jak
 
 - Wtyczka **nigdy nie publikuje sama**, tylko wstawia tekst do pola. Regulamin LinkedIna zabrania automatyzacji.
 - Wtyczka **niczego nie dokłada do strony LinkedIna** ani nie zmienia jej wyglądu (regulamin, §8.2). Strona się zmienia tylko wtedy, gdy klikniesz w panelu „Wstaw” albo „Rozwiń pełny tekst”.
-- Czyta tylko post, w którego polu komentarza klikniesz, albo tekst, który zaznaczysz lub wkleisz. Nie przegląda feedu. Gdy panel jest zamknięty, odczytany post zostaje w pamięci przeglądarki i nic nie trafia do modelu.
+- Czyta tylko post albo rozmowę, w której polu klikniesz, albo tekst, który zaznaczysz lub wkleisz. Nie przegląda skrzynki wiadomości.
+- Prywatne wiadomości z otwartej rozmowy (10 ostatnich) trafiają do modelu tylko wtedy, gdy panel jest otwarty. Wtyczka nie zapisuje ich treści ani imienia rozmówcy, tylko Twoją własną odpowiedź.
+- Wtyczka nigdy nie wysyła wiadomości. Wstawianie nie naciska Enter i nie wysyła formularza. Nie przegląda feedu. Gdy panel jest zamknięty, odczytany post zostaje w pamięci przeglądarki i nic nie trafia do modelu.
 - Treść posta trafia do modelu jako materiał do przeczytania, a prompt każe ignorować polecenia ukryte w poście. To ogranicza ryzyko, ale go nie wyklucza, dlatego zawsze czytasz komentarz przed publikacją.
 - Panel pokazuje tekst z LinkedIna i od modelu jako zwykły tekst, nie jako HTML.
-- Historia Twoich komentarzy (do 100) leży tylko w pamięci lokalnej wtyczki. Ostatnie komentarze idą do modelu jako wzór stylu.
+- Historia Twoich komentarzy i odpowiedzi w wiadomościach (łącznie do 100) leży tylko w pamięci lokalnej wtyczki. Ostatnie teksty danego rodzaju idą do modelu jako wzór stylu.
 - Klucz API leży w pamięci lokalnej wtyczki (`chrome.storage.local`) w tym profilu przeglądarki. Nie synchronizuje się z kontem Microsoft i trafia tylko do wybranego dostawcy. Nie jest szyfrowany, więc nie instaluj wtyczki w profilu, z którego korzystają inne osoby.
 
 ## Aktualizacja i wersje
@@ -150,15 +166,28 @@ src/
   background.js           otwiera panel, przechowuje wybrany post
   content/content.js      tryb podążania za klikniętym polem, wstawianie tekstu
   content/linkedin-dom.js odczyt posta ze strony LinkedIna
+  content/linkedin-messaging.js odczyt rozmowy (wiadomości)
   sidepanel/              panel boczny
   lib/                    prompty, reguły stylu, Twój styl (voice), kontrola jakości (quality),
                           Harmonic, wywołania API, ustawienia, ceny
 test/unit/      testy jednostkowe (node:test)
-test/e2e/       test całości w Chromium z atrapą LinkedIna i API
-scripts/        ikony, wersja, wyszukiwanie Chromium
+test/e2e/       test całości w Chromium z atrapą LinkedIna (feed, strona wiadomości w ramce,
+                okienko czatu w shadow DOM) i API
+scripts/        ikony, wersja, wyszukiwanie Chromium, sonda struktury LinkedIna (diagnose-linkedin.js)
 ```
 
-Gdy LinkedIn zmieni budowę strony i wtyczka przestanie odczytywać posty, zacznij od list selektorów na górze `src/content/linkedin-dom.js`.
+Gdy LinkedIn zmieni budowę strony i wtyczka przestanie odczytywać posty, zacznij od list selektorów na górze `src/content/linkedin-dom.js`. Przy wiadomościach: `src/content/linkedin-messaging.js`.
+
+### Gdy wtyczka źle odczytuje stronę
+
+LinkedIn często zmienia budowę strony. Żeby poprawić odczyt, potrzebna jest struktura strony, ale bez treści rozmów. Służy do tego `scripts/diagnose-linkedin.js`:
+
+1. Na LinkedInie kliknij w pole, które nie działa (komentarz albo wiadomość), tak żeby był w nim kursor.
+2. Naciśnij F12 i przejdź do zakładki **Console**. Przy pierwszym wklejaniu Edge poprosi o wpisanie `allow pasting`.
+3. Wklej całą zawartość `scripts/diagnose-linkedin.js` i naciśnij Enter. Wynik trafi do schowka. Kopiuj skrypt za każdym razem z pliku, bo zmienia się razem z wtyczką.
+4. Wklej wynik do nowego pliku, np. `C:\code\linkedin_plugin\.cache\probe-wiadomosci-3.txt` (folder `.cache` jest poza Gitem), i napisz, co pokazał panel.
+
+Wynik zawiera tylko nazwy elementów i klas, techniczne identyfikatory elementów (`data-testid`), układ strony, adresy ramek bez parametrów i długości tekstów. Nie zawiera treści wiadomości, imion, linków ani identyfikatorów rozmów. Gdy kursor jest w ramce (pełna strona wiadomości) albo w osadzonym fragmencie strony (okienko czatu), skrypt sam do nich wchodzi. Przed przekazaniem możesz wynik przeczytać.
 
 ### Testy
 

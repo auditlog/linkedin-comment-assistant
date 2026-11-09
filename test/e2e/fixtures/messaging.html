@@ -1,0 +1,96 @@
+<!doctype html>
+<!--
+  Simplified imitation of LinkedIn messaging (state: 2026-11) for e2e tests:
+  1. a full /messaging/ thread with a founder (grouped messages: only the first
+     message of a group carries the sender name; "--other" marks the other person),
+  2. a chat bubble in the bottom-right corner with another person.
+  The script records every way the real page could SEND a message (Enter without
+  Shift, an insertParagraph input, a form submit) so the test can assert none happened.
+-->
+<html lang="pl">
+<head><meta charset="utf-8"><title>Wiadomości | LinkedIn (fixture)</title></head>
+<body>
+<main class="scaffold-layout">
+  <div class="msg-convo-wrapper msg-thread">
+    <div class="msg-thread__header">
+      <div class="msg-entity-lockup">
+        <a class="msg-thread__link-to-profile" href="https://www.linkedin.com/in/maria-founder-7/?miniProfileUrn=x">
+          <h2 class="msg-entity-lockup__entity-title">Maria Founder</h2>
+        </a>
+        <div class="msg-entity-lockup__entity-info">CEO at FleetCo | Building fleet analytics</div>
+      </div>
+    </div>
+    <ul class="msg-s-message-list-content">
+      <li class="msg-s-message-list__event">
+        <div class="msg-s-event-listitem msg-s-event-listitem--other">
+          <a class="msg-s-message-group__profile-link" href="https://www.linkedin.com/in/maria-founder-7/"><span class="msg-s-message-group__name">Maria Founder</span></a>
+          <p class="msg-s-event-listitem__body">Hi! Could we talk about our seed round next week?</p>
+        </div>
+      </li>
+      <li class="msg-s-message-list__event">
+        <div class="msg-s-event-listitem">
+          <a class="msg-s-message-group__profile-link" href="https://www.linkedin.com/in/me-user/"><span class="msg-s-message-group__name">Ja Użytkownik</span></a>
+          <p class="msg-s-event-listitem__body">Sure, send me the deck.</p>
+        </div>
+      </li>
+      <li class="msg-s-message-list__event">
+        <div class="msg-s-event-listitem msg-s-event-listitem--other">
+          <span class="msg-s-message-group__name">Maria Founder</span>
+          <p class="msg-s-event-listitem__body">Here it is: fleetco-seed.pdf</p>
+        </div>
+      </li>
+      <li class="msg-s-message-list__event">
+        <div class="msg-s-event-listitem msg-s-event-listitem--other">
+          <p class="msg-s-event-listitem__body">Does Tuesday work for a call?</p>
+        </div>
+      </li>
+    </ul>
+    <form class="msg-form">
+      <div class="msg-form__msg-content-container">
+        <div class="msg-form__contenteditable" id="msgEditor" contenteditable="true" role="textbox" aria-label="Napisz wiadomość…"></div>
+      </div>
+      <button type="submit" class="msg-form__send-button">Wyślij</button>
+    </form>
+  </div>
+</main>
+
+<aside class="msg-overlay-container">
+  <div class="msg-overlay-conversation-bubble" data-conversation-urn="urn:li:msg_conversation:bubble-1">
+    <header class="msg-overlay-bubble-header">
+      <a href="https://www.linkedin.com/in/tom-angel/"><h2 class="msg-overlay-bubble-header__title">Tom Angel</h2></a>
+    </header>
+    <ul>
+      <li class="msg-s-message-list__event">
+        <div class="msg-s-event-listitem msg-s-event-listitem--other">
+          <span class="msg-s-message-group__name">Tom Angel</span>
+          <p class="msg-s-event-listitem__body">Are you coming to the AI meetup on Thursday?</p>
+        </div>
+      </li>
+    </ul>
+    <form class="msg-form">
+      <div class="msg-form__contenteditable" id="bubbleEditor" contenteditable="true" role="textbox"></div>
+      <button type="submit">Wyślij</button>
+    </form>
+  </div>
+</aside>
+
+<script>
+  // Every path by which LinkedIn messaging would send the message.
+  window.__sent = [];
+  const inForm = (e) => e.composedPath().some((n) => n.classList && n.classList.contains('msg-form'));
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && inForm(e)) {
+      e.preventDefault();
+      window.__sent.push('enter');
+    }
+  }, true);
+  // execCommand fires "input" (not "beforeinput") events; a new paragraph is how Enter shows up there.
+  document.addEventListener('input', (e) => {
+    if (e.inputType === 'insertParagraph' && inForm(e)) window.__sent.push('insertParagraph');
+  }, true);
+  for (const form of document.querySelectorAll('form')) {
+    form.addEventListener('submit', (e) => { e.preventDefault(); window.__sent.push('submit'); });
+  }
+</script>
+</body>
+</html>

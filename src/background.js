@@ -16,6 +16,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const boundPost = {
       ...message.post,
       tabId: sender.tab?.id ?? null,
+      // LinkedIn messaging runs in an iframe (2026-11): requests must go back to this frame.
+      frameId: sender.frameId ?? 0,
       boundAt: Date.now(),
     };
     chrome.storage.session

@@ -49,6 +49,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   learnVoice: true,
   voiceNotes: '',
   voiceLearnedAt: 0,
+  messageVoiceNotes: '',
+  messageVoiceLearnedAt: 0,
   // Optional Harmonic.ai enrichment (src/lib/harmonic.js); the key is never a local default.
   useHarmonic: false,
   harmonicApiKey: '',
