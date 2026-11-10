@@ -75,7 +75,7 @@ What a good comment looks like:
 - At most one question. No selling or self-promotion unless the user asks for it.
 - People and company names are spelled exactly as in the post. Address people the way the post's culture suggests (first names are normal on LinkedIn).
 - Never state facts about the user's company or experience that are not in <about_user> or in the user's instruction.
-- If a <user_voice> block is present, it shows how this user really writes: let it shape the comment's tone, length and wording (not the translation, ideas or notes).
+- If a <user_voice> block is present, it shows how this user really writes: let it shape the comment's wording and rhythm (not the translation, ideas or notes). The Tone and Length given in the task were chosen by the user for this text and take precedence over the tone and length of <user_voice>.
 - <existing_comments> are what other people already wrote under the post. Do not repeat their points; take a different angle.
 - <background> comes from a company database and may be outdated. Use it to avoid mistakes (e.g. congratulating on the wrong round) and to choose a relevant angle, but do not quote its numbers, funding amounts or investors in the comment unless the post itself mentions them, and never mention the database.
 
@@ -207,6 +207,7 @@ Write the ${post.replyTo?.text ? 'reply' : 'comment'} the user will post.
 - Language of the comment: ${languageSpec}.
 - Tone: ${toneSpec}.
 - Length: ${lengthSpec}.
+- Tone and length were chosen by the user for this text: they take precedence over <user_voice>.
 
 Answer in exactly this format:
 <comment>The comment, ready to paste. Plain text only, no quotation marks around it.</comment>
@@ -239,6 +240,7 @@ Write the reply the user will send in this conversation.
 - Language of the reply: ${languageSpec}.
 - Tone: ${toneSpec}.
 - Length: ${lengthSpec}.
+- Tone and length were chosen by the user for this text: they take precedence over <user_voice>.
 
 Answer in exactly this format:
 <comment>The reply message, ready to send. Plain text; line breaks allowed between short paragraphs.</comment>
@@ -253,16 +255,33 @@ Answer in exactly this format:
  * Follow-up user message asking for a revised comment.
  * @param {string} feedback - user's Polish feedback, e.g. "krócej, bez pytania"
  * @param {string|null} editedComment - the comment as currently edited by the user, if they changed it by hand
+ * @param {{tone?: string, length?: string, kind?: 'comment'|'message'}|null} [changed] - tone/length keys
+ *   changed in the panel since the text was written (only the changed ones); feedback may then be empty
  * @returns {string}
  */
-export function buildRefineMessage(feedback, editedComment = null) {
+export function buildRefineMessage(feedback, editedComment = null, changed = null) {
   const parts = [];
   if (editedComment) {
     parts.push(
       `The user edited the comment by hand. Treat this as the current version:\n<current_comment>\n${escapeForTag(editedComment)}\n</current_comment>`,
     );
   }
-  parts.push(`Revise the comment (or message reply) according to this feedback from the user (in Polish):\n<feedback>\n${escapeForTag(feedback.trim())}\n</feedback>`);
+  // Tone or length changed in the panel after the text was written: they apply from now on.
+  const settings = [];
+  if (changed?.tone && TONES[changed.tone]) settings.push(`- Tone: ${TONES[changed.tone].prompt}.`);
+  if (changed?.length) {
+    const lengthSpec = changed.kind === 'message' ? MESSAGE_LENGTHS[changed.length] : LENGTHS[changed.length]?.prompt;
+    if (lengthSpec) settings.push(`- Length: ${lengthSpec}.`);
+  }
+  if (settings.length) {
+    parts.push(`The user changed the settings for this text. Apply them in this revision; they take precedence over <user_voice>:\n${settings.join('\n')}`);
+  }
+  const text = String(feedback ?? '').trim();
+  if (text) {
+    parts.push(`Revise the comment (or message reply) according to this feedback from the user (in Polish):\n<feedback>\n${escapeForTag(text)}\n</feedback>`);
+  } else if (settings.length) {
+    parts.push('Revise the comment (or message reply) to match these settings. Keep its meaning and facts.');
+  }
   parts.push('Answer in the same format: <comment>, <back_translation>, <notes>.');
   return parts.join('\n\n');
 }

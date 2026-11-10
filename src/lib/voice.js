@@ -82,7 +82,7 @@ export function buildVoiceBlock({ examples = [], voiceNotes = '', kind = 'commen
   const parts = ['<user_voice>'];
   if (examples.length) {
     parts.push(
-      `${what} (their final wording). Match their tone, length, rhythm and vocabulary. Never copy their sentences, and never reuse facts from these examples in a new text.`,
+      `${what} (their final wording). Match their rhythm and vocabulary. The Tone and Length set in the task override the tone and length of these examples. Never copy their sentences, and never reuse facts from these examples in a new text.`,
     );
     for (const item of examples) {
       const about = escapeForTag((item.postExcerpt || '').slice(0, 160)).replace(/"/g, "'");
@@ -90,7 +90,7 @@ export function buildVoiceBlock({ examples = [], voiceNotes = '', kind = 'commen
     }
   }
   if (notes) {
-    parts.push(`Preferences learned from the user's own edits (follow them):\n<preferences>\n${escapeForTag(notes)}\n</preferences>`);
+    parts.push(`Preferences learned from the user's own edits (follow them, except where one conflicts with the Tone or Length set in the task):\n<preferences>\n${escapeForTag(notes)}\n</preferences>`);
   }
   parts.push('</user_voice>');
   return parts.join('\n');

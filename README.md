@@ -128,7 +128,7 @@ Skróty zmienisz w `edge://extensions/shortcuts` (w Chrome: `chrome://extensions
 | Twój styl | Wtyczka zapamiętuje lokalnie komentarze i odpowiedzi w wiadomościach, które wstawiasz lub kopiujesz, i pokazuje modelowi ostatnie jako wzór. Po 3 tekstach poprawionych ręcznie uczy się listy Twoich preferencji, osobno dla komentarzy i wiadomości. Obie listy możesz edytować. „Wyczyść historię” usuwa zapamiętane teksty. |
 | Harmonic | Po wpisaniu klucza API Harmonic panel pokazuje etap, finansowanie, wielkość zespołu i inwestorów firmy autora (albo rozmówcy) oraz jego rolę. |
 
-Ton i długość komentarza wybierasz w panelu przy każdym komentarzu. Wtyczka zapamiętuje ostatni wybór.
+Ton i długość komentarza wybierasz w panelu przy każdym komentarzu. Wtyczka zapamiętuje ostatni wybór. Mają pierwszeństwo przed Twoim stylem: przykłady Twoich komentarzy i wyuczone preferencje kształtują słownictwo i rytm, ale nie zmieniają wybranego tonu ani długości. Gdy zmienisz ton lub długość już po napisaniu komentarza, kliknij **Popraw** (pole może zostać puste), a model przepisze tekst według nowych ustawień.
 
 Przy OpenRouterze wtyczka wysyła effort i rozumowanie tak samo jak do Anthropic. Nie wiadomo, czy OpenRouter je przekazuje. Jeśli zwróci błąd 400, ustaw w obu grupach effort „Domyślna modelu” i rozumowanie „Automatyczne” oraz wyłącz „Pokaż tok rozumowania”. Komunikat błędu podpowiada, którą z tych zmian zrobić.
 
@@ -272,7 +272,7 @@ Wynik zawiera tylko nazwy elementów i klas, techniczne identyfikatory elementó
 
 Pierwsza linia wyniku mówi, co sonda opisała: `mode: post` (kursor w polu komentarza, opis całego posta razem z obrazami, wideo i napisami jako samymi znacznikami, bez adresów) albo `mode: nearby` (np. pole wiadomości).
 
-**Posty z dokumentem, wideo i ankietą (do wersji 0.6.0):** wtyczka nie odczytuje jeszcze treści takich postów. Żeby to dodać, potrzebne są trzy wyniki sondy:
+**Posty z dokumentem, wideo i ankietą (do wersji 0.7.0):** wtyczka nie odczytuje jeszcze treści takich postów. Żeby to dodać, potrzebne są trzy wyniki sondy:
 
 1. Znajdź w feedzie post z dokumentem (karuzela ze stronami PDF), kliknij pole komentarza pod nim, uruchom sondę i zapisz wynik w `.cache\probe-dokument.txt`.
 2. To samo pod postem z wideo: `.cache\probe-wideo.txt`.

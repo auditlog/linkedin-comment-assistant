@@ -154,7 +154,7 @@ async function mockApi(route) {
   } else if (userText.includes('<task>analyze_post</task>') || userText.includes('<task>analyze_conversation</task>')) reply = ANALYSIS_REPLY;
   else if (userText.includes('<task>write_message</task>')) reply = MESSAGE_REPLY;
   else if (userText.includes('<task>write_comment</task>')) reply = COMMENT_REPLY;
-  else if (userText.includes('<feedback>')) reply = REFINED_REPLY;
+  else if (userText.includes('<feedback>') || userText.includes('changed the settings')) reply = REFINED_REPLY;
   else if (userText.includes('<task>learn_voice</task>')) reply = '<preferences>\n- Pisz krócej i bez pytania na końcu.\n</preferences>';
   const thinkingText = body.thinking?.display === 'summarized' ? THINKING_SUMMARY : '';
   await route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream' }, body: sseBody(reply, body.model, { thinkingText }) });
@@ -1084,5 +1084,125 @@ test('probe script: post mode reports structure without content', async () => {
   const chat = await page.evaluate((src) => (0, eval)(src), source);
   assert.match(chat, /^mode: nearby\n/);
   assert.ok(!chat.includes('Czy masz chwilę'), 'no message text');
+  await page.close();
+});
+
+test('tone and length changed after writing apply to the next refinement', async () => {
+  await serviceWorker.evaluate(async () => {
+    await chrome.storage.session.remove('boundPost');
+    await chrome.storage.local.set({ history: [], settings: { provider: 'anthropic', apiKeys: { anthropic: 'sk-ant-test' }, localDefaultsApplied: true } });
+  });
+  const page = await context.newPage();
+  await page.goto('https://www.linkedin.com/feed/');
+  const panel = await context.newPage();
+  await panel.setViewportSize({ width: 400, height: 900 });
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await focusPost(page, '#editor1');
+  await panel.locator('#instruction').fill('Pogratuluj.');
+  await panel.locator('#writeComment').click();
+  await panel.waitForFunction(() => {
+    const el = document.getElementById('commentText');
+    return !el.readOnly && el.value.startsWith('Good luck in Utrecht! Which');
+  });
+  assert.equal(await panel.locator('#refineHint').isHidden(), true);
+
+  // Changing the length after writing: the panel says how to apply it.
+  await panel.locator('#length').selectOption('long');
+  await panel.locator('#refineHint').waitFor({ state: 'visible' });
+  assert.match(await panel.locator('#refineHint').textContent(), /Popraw/);
+  await snap(panel, '2c-refine-new-length');
+
+  // "Popraw" with an empty field rewrites the text to the new length.
+  const countBefore = apiRequests.length;
+  await panel.locator('#refineForm button[type="submit"]').click();
+  await panel.waitForFunction(() => {
+    const el = document.getElementById('commentText');
+    return !el.readOnly && el.value === 'Good luck in Utrecht, see you at the booth!';
+  });
+  const refineReq = apiRequests.slice(countBefore).find((r) => lastUserText(r.body).includes('changed the settings'));
+  assert.ok(refineReq, 'refinement sent');
+  assert.match(lastUserText(refineReq.body), /Length: one solid paragraph/);
+  assert.doesNotMatch(lastUserText(refineReq.body), /Tone:|<feedback>/);
+  assert.equal(await panel.locator('#refineHint').isHidden(), true);
+
+  // The new length is now part of this comment: the next refinement does not repeat it.
+  const countNext = apiRequests.length;
+  await panel.locator('#refineInput').fill('cieplej');
+  await panel.locator('#refineForm button[type="submit"]').click();
+  await panel.waitForFunction(() => !document.getElementById('commentText').readOnly && document.getElementById('resultStatus').textContent === '');
+  let nextReq;
+  for (let i = 0; i < 50 && !nextReq; i++) {
+    nextReq = apiRequests.slice(countNext).find((r) => lastUserText(r.body).includes('<feedback>'));
+    if (!nextReq) await panel.waitForTimeout(100);
+  }
+  assert.doesNotMatch(lastUserText(nextReq.body), /changed the settings/);
+
+  await serviceWorker.evaluate(() =>
+    chrome.storage.local.set({ settings: { provider: 'anthropic', apiKeys: { anthropic: 'sk-ant-test' }, localDefaultsApplied: true } }),
+  );
+  await panel.close();
+  await page.close();
+});
+
+test('review fixes: close during the selection read, fresh API key in refinements, shortcut window, history text role', async () => {
+  await serviceWorker.evaluate(async () => {
+    await chrome.storage.session.remove(['boundPost', 'translateRequest']);
+    await chrome.storage.local.set({
+      settings: { provider: 'anthropic', apiKeys: { anthropic: 'sk-ant-test' }, localDefaultsApplied: true },
+      history: [{ at: 1, kind: 'comment', postKey: 'urn:li:activity:1', author: 'A', postExcerpt: '', instruction: '', generated: 'x', final: 'Old comment', edited: false, language: 'en' }],
+    });
+  });
+  const page = await context.newPage();
+  await page.goto('https://www.linkedin.com/feed/');
+  const panel = await context.newPage();
+  await panel.setViewportSize({ width: 400, height: 900 });
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+
+  // 1. "Zamknij" while the page is still answering (nothing selected: ~200 ms) leaves no stale status.
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await page.bringToFront();
+  await panel.locator('#translateSelection').click();
+  await panel.locator('#closeTranslation').click();
+  await panel.waitForTimeout(600);
+  assert.equal(await panel.locator('#translateCard').isHidden(), true);
+  assert.equal(await panel.locator('#translateStatus').textContent(), '', 'the aborted request does not write its result');
+
+  // 2. A request for another window is left for the panel of that window.
+  const countBefore = apiRequests.length;
+  await selectText(page, '.comments-comment-item__main-content');
+  await serviceWorker.evaluate(async () => {
+    const [tab] = await chrome.tabs.query({ url: 'https://www.linkedin.com/feed/' });
+    await chrome.storage.session.set({ translateRequest: { tabId: tab.id, windowId: -42, at: Date.now() } });
+  });
+  await panel.waitForTimeout(800);
+  assert.equal(await panel.locator('#translateCard').isHidden(), true);
+  assert.equal(apiRequests.slice(countBefore).some((r) => lastUserText(r.body).includes('<task>translate_text</task>')), false);
+  assert.ok(await serviceWorker.evaluate(async () => (await chrome.storage.session.get('translateRequest')).translateRequest), 'not consumed');
+  await serviceWorker.evaluate(() => chrome.storage.session.remove('translateRequest'));
+
+  // 3. A key corrected in the settings applies to the next refinement of the same comment.
+  await focusPost(page, '#editor1');
+  await panel.locator('#instruction').fill('Pogratuluj.');
+  await panel.locator('#writeComment').click();
+  await panel.waitForFunction(() => !document.getElementById('commentText').readOnly && document.getElementById('commentText').value.startsWith('Good luck'));
+  await panel.locator('#settingsToggle').click();
+  await panel.locator('#apiKey').fill('sk-ant-new');
+  await panel.locator('#settingsView button[type="submit"]').click();
+  await panel.locator('#mainView').waitFor({ state: 'visible' });
+  const countRefine = apiRequests.length;
+  await panel.locator('#refineInput').fill('krócej');
+  await panel.locator('#refineForm button[type="submit"]').click();
+  await panel.waitForFunction(() => !document.getElementById('commentText').readOnly && document.getElementById('commentText').value === 'Good luck in Utrecht, see you at the booth!');
+  const refineReq = apiRequests.slice(countRefine).find((r) => lastUserText(r.body).includes('<feedback>'));
+  assert.equal(refineReq.headers.authorization, 'Bearer sk-ant-new');
+
+  // 4. The expandable history text is announced as a button.
+  await panel.locator('#historyToggle').click();
+  assert.equal(await panel.locator('p.history-text').first().getAttribute('role'), 'button');
+
+  await serviceWorker.evaluate(() =>
+    chrome.storage.local.set({ history: [], settings: { provider: 'anthropic', apiKeys: { anthropic: 'sk-ant-test' }, localDefaultsApplied: true } }),
+  );
+  await panel.close();
   await page.close();
 });

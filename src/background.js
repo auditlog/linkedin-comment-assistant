@@ -18,7 +18,8 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.commands.onCommand.addListener((command, tab) => {
   if (command !== 'translate-selection' || tab?.id == null) return;
   chrome.sidePanel.open({ tabId: tab.id }).catch((error) => console.warn('[LCA] sidePanel.open failed', error));
-  chrome.storage.session.set({ translateRequest: { tabId: tab.id, at: Date.now() } });
+  // windowId: with panels open in several windows, only the one next to this tab takes it.
+  chrome.storage.session.set({ translateRequest: { tabId: tab.id, windowId: tab.windowId, at: Date.now() } });
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

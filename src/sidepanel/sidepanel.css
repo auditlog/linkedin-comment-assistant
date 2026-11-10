@@ -173,6 +173,7 @@ details textarea { margin: 6px 0; font-size: 13px; }
 .history-item .row { margin-top: 6px; }
 .history-item a.history-open { font-size: 13px; }
 .history-empty { margin-top: 12px; color: var(--muted); }
+.refine-hint { margin: 6px 0 0; font-size: 13px; color: var(--warn-ink); }
 .image-note { margin-top: 8px; font-size: 13px; color: var(--muted); }
 
 .ideas { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }

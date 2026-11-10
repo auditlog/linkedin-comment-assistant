@@ -1,5 +1,16 @@
 # Historia zmian
 
+## 0.6.0 (2026-11-10)
+
+- Ton i Długość wybrane w panelu mają pierwszeństwo przed Twoim stylem. Wcześniej prompt kazał modelowi naśladować ton i długość Twoich dawnych komentarzy i wyuczonych preferencji, więc wybór np. „Dłuższy” albo „Ciepły” mógł zostać pominięty. Przykłady i preferencje nadal kształtują słownictwo i rytm.
+- Zmiana tonu lub długości po napisaniu komentarza: panel podpowiada, żeby kliknąć „Popraw”, a poprawka (także z pustym polem i „Konkretniej”) przekazuje modelowi nowe ustawienia. Wcześniej działały dopiero przy następnym „Napisz komentarz”.
+- Poprawki z przeglądu 0.5.0:
+  - „Zamknij” albo ponowne tłumaczenie w trakcie odczytu zaznaczenia przerywa poprzednie; starsze tłumaczenie nie nadpisuje nowszego, więc „Kopiuj” kopiuje to, co widać;
+  - klucz API poprawiony w ustawieniach działa od razu w kolejnej poprawce komentarza (effort, rozumowanie i model zostają z chwili napisania);
+  - Alt+Shift+T przy panelach otwartych w kilku oknach tłumaczy w panelu okna, w którym naciśnięto skrót;
+  - rozwijany tekst w historii jest dla czytników ekranu przyciskiem.
+- Obsługa postów z dokumentem i ankietą przechodzi na wersję 0.7.0 (po wynikach sondy), wideo później.
+
 ## 0.5.0 (2026-11-10)
 
 - Effort i rozumowanie w dwóch grupach ustawień: „Pisanie i poprawki” oraz „Analiza, tłumaczenia i kontrola”. Effort od „Niska” do „Maksymalna” albo „Domyślna modelu”. Rozumowanie „Automatyczne” albo „Wyłączone”: to drugie tylko dla Sonnet 5.5 przy effort do „Wysoka”, a formularz blokuje je w pozostałych przypadkach i mówi dlaczego. Ustawienia sprzed 0.5.0 przechodzą bez zmian (obie grupy dostają dotychczasowy effort).

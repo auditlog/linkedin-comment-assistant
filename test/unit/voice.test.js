@@ -48,6 +48,13 @@ test('pickExamples prefers the post language, then falls back to others', () => 
   assert.deepEqual(pickExamples(history, { language: 'de', count: 2 }).map((h) => h.final), ['pl1', 'en1']);
 });
 
+test('buildVoiceBlock lets the chosen tone and length win over examples and preferences', () => {
+  const block = buildVoiceBlock({ examples: [{ postExcerpt: 'P', final: 'Short one.' }], voiceNotes: '- Skracaj do jednego zdania.' });
+  assert.doesNotMatch(block, /Match their tone, length/);
+  assert.match(block, /Tone and Length set in the task override/);
+  assert.match(block, /except where one conflicts with the Tone or Length set in the task/);
+});
+
 test('buildVoiceBlock is empty without data and escapes LinkedIn text', () => {
   assert.equal(buildVoiceBlock({ examples: [], voiceNotes: '' }), '');
   const block = buildVoiceBlock({

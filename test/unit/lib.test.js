@@ -269,6 +269,28 @@ test('refine message includes hand edits when present', () => {
   assert.doesNotMatch(buildRefineMessage('krócej'), /current_comment/);
 });
 
+test('tone and length chosen in the panel take precedence over the user voice', () => {
+  const system = buildSystemPrompt({ aboutMe: '' });
+  assert.match(system, /Tone and Length .*take precedence over/);
+  assert.doesNotMatch(system, /shape the comment's tone, length/);
+  const [comment] = buildCommentMessages({ post: { author: 'A', text: 'Post' }, instruction: 'x', tone: 'warm', length: 'long', language: 'en' });
+  assert.match(comment.content, /chosen by the user for this text.*take precedence over <user_voice>/s);
+  const [reply] = buildCommentMessages({ post: { kind: 'message', author: 'A', text: 'A: hi' }, instruction: 'x', tone: 'warm', length: 'long', language: 'auto' });
+  assert.match(reply.content, /chosen by the user for this text.*take precedence over <user_voice>/s);
+});
+
+test('refine message carries tone and length changed after writing', () => {
+  const both = buildRefineMessage('krócej', null, { tone: 'warm', length: 'long', kind: 'comment' });
+  assert.match(both, /Tone: warm and personal/);
+  assert.match(both, /Length: one solid paragraph/);
+  assert.match(both, /<feedback>\nkrócej\n<\/feedback>/);
+  const onlyLength = buildRefineMessage('', null, { length: 'medium', kind: 'message' });
+  assert.match(onlyLength, /Length: one short paragraph/, 'message lengths for conversations');
+  assert.doesNotMatch(onlyLength, /Tone:/);
+  assert.doesNotMatch(onlyLength, /<feedback>/, 'no empty feedback block');
+  assert.doesNotMatch(buildRefineMessage('krócej'), /Tone:|Length:/);
+});
+
 // --- post-text.js ---
 
 test('translate prompt wraps the selection as data and states both directions', () => {

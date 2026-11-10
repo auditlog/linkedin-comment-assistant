@@ -85,6 +85,7 @@ const state = {
   // with thinking off the API forbids changing effort mid-conversation, and a changed
   // thinking setting would invalidate the cache. New settings apply from the next comment.
   writeConfig: null,
+  writtenWith: null, // {tone, length} the current comment was written or last revised with
   analysisThinking: '', // streamed thinking summary of the analysis (showThinking)
   resultThinking: '', // streamed thinking summary of the last comment reply
   lastResultThinking: '',
@@ -205,6 +206,8 @@ function setPost(post) {
   state.commentTranslations = [];
   state.conversation = [];
   state.writeConfig = null;
+  state.writtenWith = null;
+  $('refineHint').hidden = true;
   state.lastGeneratedComment = '';
   state.lastResultRaw = '';
   state.analysisThinking = '';
@@ -383,11 +386,17 @@ async function translateSelection({ tabId } = {}) {
   const status = $('translateStatus');
   $('translateCard').hidden = false;
   state.translateController?.abort();
-  state.translateController = null;
   state.translateRaw = '';
   $('translateSource').textContent = '';
   renderTranslation();
-  if (!ensureConfigOrExplain(status)) return;
+  // Owned before the first await: a second trigger or "Zamknij" while the page is still
+  // answering aborts this run, so an older result never overwrites a newer one.
+  const controller = new AbortController();
+  state.translateController = controller;
+  if (!ensureConfigOrExplain(status)) {
+    state.translateController = null;
+    return;
+  }
 
   let text = '';
   try {
@@ -396,9 +405,10 @@ async function translateSelection({ tabId } = {}) {
     const response = await chrome.tabs.sendMessage(id, { type: 'lca:getSelection' });
     text = String(response?.text || '').trim();
   } catch {
-    setStatus(status, TRANSLATE_MESSAGES.unreachable, 'error');
+    if (!controller.signal.aborted) setStatus(status, TRANSLATE_MESSAGES.unreachable, 'error');
     return;
   }
+  if (controller.signal.aborted) return;
   if (!text) {
     setStatus(status, TRANSLATE_MESSAGES.noSelection, 'error');
     return;
@@ -407,8 +417,6 @@ async function translateSelection({ tabId } = {}) {
   if (truncated) text = text.slice(0, MAX_SELECTION_CHARS);
   $('translateSource').textContent = `„${text.slice(0, 120)}${text.length > 120 ? '…' : ''}”`;
 
-  const controller = new AbortController();
-  state.translateController = controller;
   const cfg = config('analysis');
   setStatus(status, 'Tłumaczę…');
   try {
@@ -418,11 +426,13 @@ async function translateSelection({ tabId } = {}) {
       {
         signal: controller.signal,
         onText: (partial) => {
+          if (state.translateController !== controller) return; // superseded or closed
           state.translateRaw = partial;
           scheduleRender('translate', () => renderTranslation({ streaming: true }));
         },
       },
     );
+    if (state.translateController !== controller) return;
     state.translateRaw = raw;
     setStatus(status, truncated ? TRANSLATE_MESSAGES.truncated : '', truncated ? 'warn' : '');
   } catch (error) {
@@ -437,9 +447,17 @@ async function translateSelection({ tabId } = {}) {
   }
 }
 
-/** Run a request left by the Alt+Shift+T command (src/background.js), at most once and only when fresh. */
-function handleTranslateRequest(request) {
+/**
+ * Run a request left by the Alt+Shift+T command (src/background.js), at most once and only
+ * when fresh. A request for another window is left for the panel of that window.
+ */
+async function handleTranslateRequest(request) {
   if (!request || request.at === state.lastTranslateAt) return;
+  if (request.windowId != null) {
+    const current = await chrome.windows.getCurrent().catch(() => null);
+    if (current && current.id !== request.windowId) return;
+  }
+  if (request.at === state.lastTranslateAt) return; // handled meanwhile (start and onChanged)
   chrome.storage.session.remove('translateRequest');
   if (Date.now() - request.at > 10_000) return; // stale: the panel was opened much later
   state.lastTranslateAt = request.at;
@@ -711,8 +729,42 @@ function renderResult(raw, { streaming }) {
 }
 
 /**
+ * Config for the comment conversation: effort, thinking, provider and model stay as
+ * frozen by writeComment, but the API key is read fresh, so a key corrected in the
+ * settings (e.g. after a 401) works for the next refinement of the same comment.
+ */
+function frozenWriteConfig() {
+  const now = config('write');
+  if (!state.writeConfig) return now;
+  return state.writeConfig.provider === now.provider ? { ...state.writeConfig, apiKey: now.apiKey } : state.writeConfig;
+}
+
+/** Tone and length chosen in the panel right now. */
+function currentChoices() {
+  return { tone: $('tone').value, length: $('length').value };
+}
+
+/**
+ * Tone/length changed since the comment was written (only the changed keys), or null.
+ * A refinement passes them to the model, which otherwise keeps the old ones.
+ */
+function choiceChanges() {
+  if (!state.writtenWith || state.conversation.length === 0) return null;
+  const now = currentChoices();
+  const changed = {};
+  if (now.tone !== state.writtenWith.tone) changed.tone = now.tone;
+  if (now.length !== state.writtenWith.length) changed.length = now.length;
+  return Object.keys(changed).length ? { ...changed, kind: postKind() } : null;
+}
+
+function renderRefineHint() {
+  $('refineHint').hidden = !choiceChanges();
+}
+
+/**
  * Send the current conversation and render the reply as the new result.
  * On failure the last (unanswered) user message is removed, so the history stays valid.
+ * @returns {Promise<boolean>} true when the reply arrived
  */
 async function sendConversation(statusText) {
   const status = $('resultStatus');
@@ -726,7 +778,7 @@ async function sendConversation(statusText) {
   state.controllers.check?.abort();
   state.check = { status: 'idle', issues: [], checkedText: '', error: '' };
   $('qualityBox').hidden = true;
-  const cfg = state.writeConfig ?? config('write');
+  const cfg = frozenWriteConfig();
   let partialRaw = '';
   state.resultThinking = '';
   try {
@@ -755,6 +807,7 @@ async function sendConversation(statusText) {
     runCheck();
     setStatus(status, message.stop_reason === 'max_tokens' ? 'Odpowiedź została ucięta (limit długości). Spróbuj „Popraw: krócej”.' : '', message.stop_reason === 'max_tokens' ? 'error' : '');
     addCost(message);
+    return true;
   } catch (error) {
     state.conversation.pop();
     const msg = describeError(error, cfg);
@@ -762,6 +815,7 @@ async function sendConversation(statusText) {
     cancelRender('result');
     state.resultThinking = state.lastResultThinking;
     renderResult(state.lastResultRaw, { streaming: false });
+    return false;
   } finally {
     if (state.controllers.comment === controller) state.controllers.comment = null;
     $('writeComment').disabled = false;
@@ -793,25 +847,36 @@ async function writeComment() {
   state.lastResultRaw = '';
   state.lastResultThinking = '';
   state.writeConfig = config('write');
+  state.writtenWith = currentChoices();
+  renderRefineHint();
   await sendConversation('Piszę komentarz…');
 }
 
 async function refine(event) {
   event.preventDefault();
   const feedback = $('refineInput').value.trim();
-  if (!feedback) {
-    setStatus($('resultStatus'), 'Wpisz, co poprawić, np. „krócej” albo „bez pytania na końcu”.', 'error');
-    return;
-  }
   if (state.conversation.length === 0) {
     setStatus($('resultStatus'), 'Najpierw napisz komentarz (krok 3).', 'error');
     return;
   }
+  const changes = choiceChanges();
+  if (!feedback && !changes) {
+    setStatus($('resultStatus'), 'Wpisz, co poprawić, np. „krócej” albo „bez pytania na końcu”.', 'error');
+    return;
+  }
   const current = $('commentText').value.trim();
   const edited = current && current !== state.lastGeneratedComment.trim() ? current : null;
-  state.conversation.push({ role: 'user', content: buildRefineMessage(feedback, edited) });
   $('refineInput').value = '';
-  await sendConversation('Poprawiam…');
+  await sendRevision(buildRefineMessage(feedback, edited, changes), feedback ? 'Poprawiam…' : 'Przepisuję według nowego tonu i długości…');
+}
+
+/** Send one revision; on success the tone/length it carried become the comment's own. */
+async function sendRevision(content, statusText) {
+  const sent = currentChoices();
+  state.conversation.push({ role: 'user', content });
+  const ok = await sendConversation(statusText);
+  if (ok) state.writtenWith = sent;
+  renderRefineHint();
 }
 
 // --- quality check ---------------------------------------------------------
@@ -899,8 +964,7 @@ async function makeSpecific() {
   if (!issues.length || state.conversation.length === 0) return;
   const current = $('commentText').value.trim();
   const edited = current && current !== state.lastGeneratedComment.trim() ? current : null;
-  state.conversation.push({ role: 'user', content: buildRefineMessage(buildSpecificFeedback(issues), edited) });
-  await sendConversation('Poprawiam: konkretniej…');
+  await sendRevision(buildRefineMessage(buildSpecificFeedback(issues), edited, choiceChanges()), 'Poprawiam: konkretniej…');
 }
 
 // --- your voice -------------------------------------------------------------
@@ -1103,6 +1167,7 @@ function historyItem(entry) {
   text.className = 'history-text';
   text.textContent = entry.final;
   text.tabIndex = 0;
+  text.setAttribute('role', 'button');
   text.title = 'Kliknij, aby rozwinąć lub zwinąć';
   text.setAttribute('aria-expanded', 'false');
   const toggle = () => text.setAttribute('aria-expanded', String(text.classList.toggle('expanded')));
@@ -1498,8 +1563,14 @@ function bindEvents() {
       writeComment();
     }
   });
-  $('tone').addEventListener('change', () => persistChoice({ tone: $('tone').value }));
-  $('length').addEventListener('change', () => persistChoice({ length: $('length').value }));
+  $('tone').addEventListener('change', () => {
+    persistChoice({ tone: $('tone').value });
+    renderRefineHint();
+  });
+  $('length').addEventListener('change', () => {
+    persistChoice({ length: $('length').value });
+    renderRefineHint();
+  });
   $('refineForm').addEventListener('submit', refine);
   $('commentText').addEventListener('input', renderQuality);
   $('makeSpecific').addEventListener('click', makeSpecific);
