@@ -5,12 +5,19 @@
 // links and other attribute values are dropped, so no message content or names leave
 // the page. Iframes: their address without query string, and the probe follows the
 // cursor into same-origin iframes (LinkedIn messaging runs in one, 2026-11).
+// Two modes (first line of the output):
+// - "mode: post": the cursor is in a comment box; the whole post is described, deeper,
+//   with images, videos and caption tracks as bare markers ([src], w=…, kind), so posts
+//   with a document, video or poll can be supported (0.6.0);
+// - "mode: nearby": anything else (e.g. a message box); the nearest list around the cursor.
 // The result is copied to the clipboard with the DevTools copy() helper.
 // See also: README, "Gdy wtyczka źle odczytuje stronę"; src/content/linkedin-messaging.js.
 (() => {
-  const SKIP = new Set(['SCRIPT', 'STYLE', 'SVG', 'PATH', 'IMG', 'VIDEO', 'NOSCRIPT', 'TEMPLATE']);
+  const SKIP = new Set(['SCRIPT', 'STYLE', 'SVG', 'PATH', 'NOSCRIPT', 'TEMPLATE']);
   const ATTRS = ['role', 'contenteditable', 'aria-multiline', 'type'];
-  const MAX_LINES = 1500;
+  // The post container, as in src/content/linkedin-dom.js.
+  const POST_CONTAINER =
+    '[data-urn*="urn:li:activity:"], [data-id*="urn:li:activity:"], [data-urn*="urn:li:ugcPost:"], .feed-shared-update-v2, [role="article"], article';
   const out = [];
 
   // Path with id-like segments (containing digits, 8+ chars) masked; words stay readable.
@@ -38,6 +45,12 @@
     if (dataNames.length) s += ` data:{${dataNames.join(',')}}`;
     if (el.hasAttribute('data-testid')) s += ` testid="${el.getAttribute('data-testid')}"`;
     if (el.hasAttribute('href')) s += ' [href]';
+    // Media: only that an address exists, never the address itself.
+    if (el.hasAttribute('src') && el.tagName !== 'IFRAME') s += ' [src]';
+    if (el.hasAttribute('poster')) s += ' [poster]';
+    if (el.hasAttribute('alt')) s += ' [alt]';
+    if (el.tagName === 'IMG') s += ` w=${el.naturalWidth || el.width || 0}`;
+    if (el.tagName === 'TRACK') s += ` kind=${el.getAttribute('kind') || '?'} srclang=${el.getAttribute('srclang') || '?'}`;
     if (el.shadowRoot) s += ' {shadow-root}';
     if (el.tagName === 'IFRAME') s += ` {iframe src=${frameAddress(el)}}`;
     return s;
@@ -79,22 +92,42 @@
     if (n === body) break;
   }
 
-  // Skeleton of the nearest ancestor that holds a list (the message list or the post),
+  // Comment box under a post (not a message box): describe the whole post.
+  const inMessageBox = Boolean(el && el.closest && el.closest('.msg-form'));
+  const post = !inMessageBox && el && el.closest ? el.closest(POST_CONTAINER) : null;
+  const mode = post ? 'post' : 'nearby';
+  out.unshift(`mode: ${mode}`);
+  const MAX_DEPTH = post ? 24 : 16;
+  const MAX_LINES = post ? 2500 : 1500;
+
+  // Nearby mode: the nearest ancestor that holds a list (the message list or the post),
   // limited to 8 levels above the focused element.
-  let pane = el;
-  for (let i = 0; pane && pane !== body && i < 8; i++) {
+  let pane = post || el;
+  for (let i = 0; !post && pane && pane !== body && i < 8; i++) {
     if (pane.querySelectorAll('li').length >= 3) break;
     pane = pane.parentElement;
   }
   out.push(`pane: ${describe(pane)}`);
   const walk = (node, depth) => {
-    if (depth > 16 || out.length > MAX_LINES) return;
+    if (depth > MAX_DEPTH || out.length > MAX_LINES) return;
     for (const child of node.children) {
       if (SKIP.has(child.tagName)) continue;
       const lengths = [...child.childNodes]
         .filter((t) => t.nodeType === 3 && t.textContent.trim())
         .map((t) => t.textContent.trim().length);
       out.push(`${'  '.repeat(depth)}${describe(child)}${lengths.length ? `  «text ${lengths.join('+')} chars»` : ''}`);
+      if (child.tagName === 'IFRAME') {
+        // Document viewers may sit in a frame: follow same-origin ones, mark the others.
+        let inner = null;
+        try {
+          inner = child.contentDocument && child.contentDocument.body;
+        } catch {
+          inner = null;
+        }
+        if (inner) walk(inner, depth + 1);
+        else out.push(`${'  '.repeat(depth + 1)}{iframe cross-origin}`);
+        continue;
+      }
       walk(child.shadowRoot || child, depth + 1);
     }
   };

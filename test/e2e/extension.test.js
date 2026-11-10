@@ -45,21 +45,41 @@ dzięki za deck. Wtorek o 10:00 mi pasuje.</back_translation>
 - brak uwag
 </notes>`;
 
+const THINKING_SUMMARY = 'Streszczenie rozumowania testowego.';
+
+const TRANSLATE_REPLY = `<translation>Świetna robota, zespole!</translation>
+<notes>
+- „Kudos” to luźne gratulacje.
+</notes>`;
+
+const TRANSLATE_COMMENTS_REPLY = `<translations>
+<item>Świetna wiadomość! Czy na stoisku pokażecie też panel floty hybrydowej?</item>
+<item>Strefy zeroemisyjne są tu prawdziwym motorem zmian.</item>
+</translations>`;
+
 const REFINED_REPLY = `<comment>Good luck in Utrecht, see you at the booth!</comment>
 <back_translation>Powodzenia w Utrechcie, do zobaczenia na stoisku!</back_translation>
 <notes>
 - brak uwag
 </notes>`;
 
-/** Build an SSE body like the Messages API stream: a thinking block, then the text in chunks. */
-function sseBody(text, model) {
+/**
+ * Build an SSE body like the Messages API stream: a thinking block, then the text in chunks.
+ * With `thinkingText` (summarized thinking requested) the thinking block streams that summary.
+ */
+function sseBody(text, model, { thinkingText = '' } = {}) {
   const events = [
     ['message_start', { type: 'message_start', message: { id: 'msg_test', type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1500, output_tokens: 1 } } }],
     ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } }],
+  ];
+  for (let i = 0; i < thinkingText.length; i += 20) {
+    events.push(['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: thinkingText.slice(i, i + 20) } }]);
+  }
+  events.push(
     ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-test' } }],
     ['content_block_stop', { type: 'content_block_stop', index: 0 }],
     ['content_block_start', { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } }],
-  ];
+  );
   for (let i = 0; i < text.length; i += 40) {
     events.push(['content_block_delta', { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: text.slice(i, i + 40) } }]);
   }
@@ -120,7 +140,13 @@ async function mockApi(route) {
   }
   const userText = lastUserText(body);
   let reply = 'OK';
-  if (userText.includes('<task>check_comment</task>')) {
+  if (userText.includes('<task>translate_comments</task>')) {
+    reply = TRANSLATE_COMMENTS_REPLY;
+  } else if (userText.includes('<task>translate_text</task>')) {
+    // Slow enough for a test to switch posts while the translation is still running.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    reply = TRANSLATE_REPLY;
+  } else if (userText.includes('<task>check_comment</task>')) {
     // The first comment draft "restates the post"; the refined one and message replies pass.
     reply = userText.includes('see you at the booth') || userText.includes('<conversation')
       ? '<verdict>ok</verdict>\n<issues></issues>'
@@ -130,7 +156,8 @@ async function mockApi(route) {
   else if (userText.includes('<task>write_comment</task>')) reply = COMMENT_REPLY;
   else if (userText.includes('<feedback>')) reply = REFINED_REPLY;
   else if (userText.includes('<task>learn_voice</task>')) reply = '<preferences>\n- Pisz krócej i bez pytania na końcu.\n</preferences>';
-  await route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream' }, body: sseBody(reply, body.model) });
+  const thinkingText = body.thinking?.display === 'summarized' ? THINKING_SUMMARY : '';
+  await route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream' }, body: sseBody(reply, body.model, { thinkingText }) });
 }
 
 before(async () => {
@@ -679,5 +706,383 @@ test('chat bubble in a shadow root (real LinkedIn /feed, 2026-11): read, insert,
   assert.match(await page.locator('#shadowEditor').innerText(), /^Hi Maria,\n+thanks for the deck/);
   assert.deepEqual(await page.evaluate(() => window.__sent), [], 'nothing was sent');
   await panel.close();
+  await page.close();
+});
+
+test('reasoning settings: groups, frozen write config, visible thinking summary', async () => {
+  await serviceWorker.evaluate(async () => {
+    await chrome.storage.session.remove('boundPost');
+    await chrome.storage.local.set({ settings: { provider: 'anthropic', apiKeys: { anthropic: 'sk-ant-test' }, localDefaultsApplied: true } });
+  });
+  const page = await context.newPage();
+  await page.goto('https://www.linkedin.com/feed/');
+  const panel = await context.newPage();
+  await panel.setViewportSize({ width: 400, height: 900 });
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+
+  // 1. Two groups in the settings form.
+  await panel.locator('#settingsToggle').click();
+  await panel.locator('#effort').selectOption('high');
+  await panel.locator('#thinking').selectOption('off');
+  await panel.locator('#analysisEffort').selectOption('medium');
+  await panel.locator('#showThinking').check();
+  await snap(panel, '3b-settings-reasoning');
+  await panel.locator('#settingsView button[type="submit"]').click();
+  await panel.locator('#settingsStatus', { hasText: 'Zapisano.' }).waitFor();
+  await panel.locator('#mainView').waitFor({ state: 'visible' });
+
+  // 2. Analysis uses the analysis group and shows the thinking summary.
+  const countBefore = apiRequests.length;
+  await focusPost(page, '#editor1');
+  await panel.locator('#analysisReasoningText', { hasText: THINKING_SUMMARY }).waitFor({ state: 'attached', timeout: 10000 });
+  await panel.locator('#translation', { hasText: 'Volteum jedzie do Utrechtu' }).waitFor({ timeout: 10000 });
+  const fresh = () => apiRequests.slice(countBefore);
+  const analysisReq = fresh().find((r) => lastUserText(r.body).includes('<task>analyze_post</task>'));
+  assert.deepEqual(analysisReq.body.output_config, { effort: 'medium' });
+  assert.deepEqual(analysisReq.body.thinking, { type: 'adaptive', display: 'summarized' });
+  await panel.locator('#analysisReasoning summary').click();
+  await snap(panel, '1b-analysis-thinking');
+
+  // 3. Writing uses the write group: thinking off, effort high, no summary to show.
+  await panel.locator('#instruction').fill('Pogratuluj i zapytaj o dane.');
+  await panel.locator('#writeComment').click();
+  await panel.waitForFunction(() => {
+    const el = document.getElementById('commentText');
+    return !el.readOnly && el.value.startsWith('Good luck in Utrecht! Which');
+  });
+  const writeReq = fresh().find((r) => lastUserText(r.body).includes('<task>write_comment</task>'));
+  assert.deepEqual(writeReq.body.thinking, { type: 'between_tools' });
+  assert.equal(writeReq.body.output_config.effort, 'high');
+  assert.equal(writeReq.body.max_tokens, 16000);
+  assert.equal(await panel.locator('#resultReasoning').isHidden(), true);
+
+  // 4. Effort max: "off" is not allowed any more and the form says why.
+  await panel.locator('#settingsToggle').click();
+  await panel.locator('#effort').selectOption('max');
+  assert.equal(await panel.locator('#thinking option[value="off"]').isDisabled(), true);
+  assert.equal(await panel.locator('#thinking').inputValue(), 'adaptive');
+  assert.match(await panel.locator('#thinkingHint').textContent(), /tylko z Sonnet 5\.5/);
+  assert.equal(await panel.locator('#analysisThinking option[value="off"]').isDisabled(), false, 'medium still allows off');
+  await panel.locator('#settingsView button[type="submit"]').click();
+  await panel.locator('#settingsStatus', { hasText: 'Zapisano.' }).waitFor();
+  await panel.locator('#mainView').waitFor({ state: 'visible' });
+
+  // 5. A refinement keeps the frozen config of this comment.
+  await panel.locator('#refineInput').fill('krócej');
+  await panel.locator('#refineForm button[type="submit"]').click();
+  await panel.waitForFunction(() => {
+    const el = document.getElementById('commentText');
+    return !el.readOnly && el.value === 'Good luck in Utrecht, see you at the booth!';
+  });
+  const refineReq = fresh().find((r) => lastUserText(r.body).includes('<feedback>'));
+  assert.equal(refineReq.body.output_config.effort, 'high');
+  assert.deepEqual(refineReq.body.thinking, { type: 'between_tools' });
+
+  // 6. A new comment takes the new settings.
+  const countBeforeRewrite = apiRequests.length;
+  await panel.locator('#writeComment').click();
+  await panel.waitForFunction(() => {
+    const el = document.getElementById('commentText');
+    return !el.readOnly && el.value.startsWith('Good luck in Utrecht! Which');
+  });
+  const rewriteReq = apiRequests.slice(countBeforeRewrite).find((r) => lastUserText(r.body).includes('<task>write_comment</task>'));
+  assert.equal(rewriteReq.body.output_config.effort, 'max');
+  assert.equal(rewriteReq.body.max_tokens, 64000);
+  assert.deepEqual(rewriteReq.body.thinking, { type: 'adaptive', display: 'summarized' });
+  await panel.locator('#resultReasoningText', { hasText: THINKING_SUMMARY }).waitFor({ state: 'attached' });
+  assert.equal(await panel.locator('#resultReasoning').isHidden(), false);
+
+  await serviceWorker.evaluate(() =>
+    chrome.storage.local.set({ settings: { provider: 'anthropic', apiKeys: { anthropic: 'sk-ant-test' }, localDefaultsApplied: true } }),
+  );
+  await panel.close();
+  await page.close();
+});
+
+/** Select the contents of the first element matching `selector` (inside `shadowHost`'s root when given). */
+async function selectText(page, selector, shadowHost = null) {
+  await page.evaluate(
+    ([sel, host]) => {
+      const root = host ? document.querySelector(host).shadowRoot : document;
+      const range = document.createRange();
+      range.selectNodeContents(root.querySelector(sel));
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    },
+    [selector, shadowHost],
+  );
+}
+
+function sourceText(body) {
+  const match = lastUserText(body).match(/<source_text>\n([\s\S]*)\n<\/source_text>/);
+  return match ? match[1] : null;
+}
+
+test('translate selection: button, post switch, long text, no selection, other tab, page unchanged', async () => {
+  await serviceWorker.evaluate(async () => {
+    await chrome.storage.session.remove('boundPost');
+    await chrome.storage.local.set({ settings: { provider: 'anthropic', apiKeys: { anthropic: 'sk-ant-test' }, localDefaultsApplied: true } });
+  });
+  const page = await context.newPage();
+  await page.goto('https://www.linkedin.com/feed/');
+  // A very long text on the page (added before the snapshot, so the comparison stays exact).
+  await page.evaluate(() => {
+    const div = document.createElement('div');
+    div.id = 'longText';
+    div.textContent = 'Fleet data matters. '.repeat(700); // 14 000 characters
+    document.body.append(div);
+  });
+  const htmlBefore = await page.evaluate(() => document.body.outerHTML);
+  await selectText(page, '.comments-comment-item__main-content');
+
+  const panel = await context.newPage();
+  await panel.setViewportSize({ width: 400, height: 900 });
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await page.bringToFront();
+  const countBefore = apiRequests.length;
+  await panel.locator('#translateSelection').click();
+  await panel.locator('#translateCard').waitFor({ state: 'visible' });
+
+  // Switching posts while the translation runs must neither stop it nor close the card.
+  let translateReq;
+  for (let i = 0; i < 50 && !translateReq; i++) {
+    translateReq = apiRequests.slice(countBefore).find((r) => lastUserText(r.body).includes('<task>translate_text</task>'));
+    if (!translateReq) await panel.waitForTimeout(100);
+  }
+  assert.ok(translateReq, 'translation request sent');
+  assert.equal(sourceText(translateReq.body), 'Great news! Will you also show the hybrid fleet dashboard at the booth?');
+  assert.deepEqual(translateReq.body.output_config, { effort: 'low' }, 'analysis group settings');
+  await focusPost(page, '#editor2');
+  await panel.locator('#postAuthor', { hasText: 'Jan Kowalski' }).waitFor();
+  await panel.locator('#translateResult', { hasText: 'Świetna robota' }).waitFor({ timeout: 10000 });
+  assert.match(await panel.locator('#translateNotes').textContent(), /Kudos/);
+  assert.match(await panel.locator('#translateSource').textContent(), /Great news!/);
+  assert.equal(await panel.locator('#translateCard').isVisible(), true);
+  assert.equal(await page.evaluate(() => document.body.outerHTML), htmlBefore, 'page DOM unchanged');
+  await snap(panel, '5-translate-selection');
+
+  // Long selection: only the first 10 000 characters go to the model, and the card says so.
+  await selectText(page, '#longText');
+  await page.bringToFront();
+  const countLong = apiRequests.length;
+  await panel.locator('#translateSelection').click();
+  await panel.locator('#translateStatus', { hasText: 'Przetłumaczono pierwsze 10 000 znaków zaznaczenia.' }).waitFor({ timeout: 10000 });
+  const longReq = apiRequests.slice(countLong).find((r) => lastUserText(r.body).includes('<task>translate_text</task>'));
+  assert.equal(sourceText(longReq.body).length, 10000);
+
+  // Nothing selected.
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await page.bringToFront();
+  await panel.locator('#translateSelection').click();
+  await panel.locator('#translateStatus', { hasText: 'Na stronie nie ma zaznaczonego tekstu.' }).waitFor({ timeout: 5000 });
+
+  // A tab without LinkedIn.
+  const other = await context.newPage();
+  await other.goto('about:blank');
+  await other.bringToFront();
+  await panel.locator('#translateSelection').click();
+  await panel.locator('#translateStatus', { hasText: 'działa na otwartej karcie LinkedIna' }).waitFor({ timeout: 5000 });
+
+  await panel.locator('#closeTranslation').click();
+  assert.equal(await panel.locator('#translateCard').isHidden(), true);
+  await other.close();
+  await panel.close();
+  await page.close();
+});
+
+test('translate selection inside the chat bubble shadow root, started like the keyboard shortcut', async () => {
+  const page = await context.newPage();
+  await page.goto('https://www.linkedin.com/feed/shadow-chat/');
+  const panel = await context.newPage();
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await panel.locator('#translateSelection').waitFor();
+  await selectText(page, 'p.msg-s-event-listitem__body', '#interop-outlet');
+  const countBefore = apiRequests.length;
+  // Alt+Shift+T: the service worker opens the panel and leaves this request in session storage.
+  await serviceWorker.evaluate(async () => {
+    const [tab] = await chrome.tabs.query({ url: 'https://www.linkedin.com/feed/shadow-chat/' });
+    await chrome.storage.session.set({ translateRequest: { tabId: tab.id, at: Date.now() } });
+  });
+  await panel.locator('#translateResult', { hasText: 'Świetna robota' }).waitFor({ timeout: 10000 });
+  const req = apiRequests.slice(countBefore).find((r) => lastUserText(r.body).includes('<task>translate_text</task>'));
+  assert.match(sourceText(req.body), /Czy masz chwilę w czwartek/);
+  assert.equal(await serviceWorker.evaluate(async () => (await chrome.storage.session.get('translateRequest')).translateRequest), undefined, 'request consumed');
+  await panel.close();
+  await page.close();
+});
+
+test('translate comments under the post', async () => {
+  await serviceWorker.evaluate(async () => {
+    await chrome.storage.session.remove('boundPost');
+    await chrome.storage.local.set({ settings: { provider: 'anthropic', apiKeys: { anthropic: 'sk-ant-test' }, localDefaultsApplied: true } });
+  });
+  const page = await context.newPage();
+  await page.goto('https://www.linkedin.com/feed/');
+  const panel = await context.newPage();
+  await panel.setViewportSize({ width: 400, height: 900 });
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await focusPost(page, '#editor1');
+  await panel.locator('#otherComments li').nth(1).waitFor();
+  assert.match(await panel.locator('#otherComments li').first().textContent(), /Anna Nowak.*Great news!/s);
+  const countBefore = apiRequests.length;
+  await panel.locator('#translateComments').click();
+  await panel.locator('#otherComments li').first().locator('p.comment-translation', { hasText: 'Świetna wiadomość' }).waitFor({ timeout: 10000 });
+  assert.match(await panel.locator('#otherComments li').nth(1).locator('p.comment-translation').textContent(), /Strefy zeroemisyjne/);
+  assert.equal(await panel.locator('#translateComments').isHidden(), true);
+  const req = apiRequests.slice(countBefore).find((r) => lastUserText(r.body).includes('<task>translate_comments</task>'));
+  assert.deepEqual(req.body.output_config, { effort: 'low' }, 'analysis group settings');
+  await snap(panel, '6-comment-translations');
+  await panel.close();
+  await page.close();
+});
+
+test('history view: search, filter, copy, open link, delete', async () => {
+  const now = Date.now();
+  await serviceWorker.evaluate(async (t) => {
+    await chrome.storage.session.remove('boundPost');
+    await chrome.storage.local.set({
+      settings: { provider: 'anthropic', apiKeys: { anthropic: 'sk-ant-test' }, localDefaultsApplied: true },
+      history: [
+        { at: t - 1000, kind: 'comment', postKey: 'urn:li:activity:7001', author: 'Volteum', postExcerpt: 'Volteum is heading to Utrecht for Fleet Expo 2026.', instruction: '', generated: 'Good luck!', final: 'Good luck in Utrecht, see you at the booth!', edited: true, language: 'en' },
+        { at: t - 2000, kind: 'comment', postKey: 'fallback-xyz', author: '', postExcerpt: 'Pasted post about a product launch.', instruction: '', generated: 'Congrats!', final: 'Congrats on the launch!', edited: false, language: 'en' },
+        { at: t - 3000, kind: 'message', postKey: 'msg:thread:2-abc', author: '', postExcerpt: '', instruction: '', generated: '', final: 'Wtorek o 10:00 mi pasuje.', edited: false, language: 'pl' },
+      ],
+    });
+  }, now);
+  const panel = await context.newPage();
+  await panel.setViewportSize({ width: 400, height: 900 });
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await panel.locator('#historyToggle').click();
+  await panel.locator('#historyView').waitFor({ state: 'visible' });
+  assert.equal(await panel.locator('#mainView').isHidden(), true);
+  assert.equal(await panel.locator('#historyToggle').getAttribute('aria-expanded'), 'true');
+  assert.equal(await panel.locator('#historyCount').textContent(), '3 ze 100');
+  assert.equal(await panel.locator('li.history-item').count(), 3);
+  assert.match(await panel.locator('li.history-item').first().textContent(), /poprawiony ręcznie/);
+  await snap(panel, '7-history');
+
+  await panel.locator('#historySearch').fill('utrecht');
+  assert.equal(await panel.locator('li.history-item').count(), 1);
+  await panel.locator('#historySearch').fill('');
+  await panel.locator('#historyKind').selectOption('message');
+  assert.equal(await panel.locator('li.history-item').count(), 1);
+  assert.match(await panel.locator('li.history-item').first().textContent(), /Wtorek o 10:00/);
+  await panel.locator('#historyKind').selectOption('all');
+
+  // "Otwórz post" only where the key is a LinkedIn post URN.
+  const links = panel.locator('li.history-item a.history-open');
+  assert.equal(await links.count(), 1);
+  assert.equal(await links.first().getAttribute('href'), 'https://www.linkedin.com/feed/update/urn:li:activity:7001/');
+  assert.equal(await links.first().getAttribute('target'), '_blank');
+  assert.equal(await panel.locator('li.history-item').first().locator('a.history-open').count(), 1);
+
+  await panel.locator('li.history-item').first().locator('button', { hasText: 'Kopiuj' }).click();
+  await panel.locator('li.history-item').first().locator('button', { hasText: 'Skopiowano' }).waitFor();
+
+  await panel.locator('li.history-item').nth(1).locator('button', { hasText: 'Usuń' }).click();
+  assert.equal(await panel.locator('li.history-item').count(), 2);
+  assert.equal(await panel.locator('#historyCount').textContent(), '2 ze 100');
+  const stored = await serviceWorker.evaluate(async () => (await chrome.storage.local.get('history')).history);
+  assert.deepEqual(stored.map((e) => e.final), ['Good luck in Utrecht, see you at the booth!', 'Wtorek o 10:00 mi pasuje.']);
+
+  await panel.locator('#historyToggle').click();
+  await panel.locator('#mainView').waitFor({ state: 'visible' });
+  await serviceWorker.evaluate(() => chrome.storage.local.set({ history: [] }));
+  await panel.close();
+});
+
+test('backup: export without keys, import with preview, bad file', async () => {
+  await serviceWorker.evaluate(async () => {
+    await chrome.storage.session.remove('boundPost');
+    await chrome.storage.local.set({
+      settings: { provider: 'anthropic', apiKeys: { anthropic: 'sk-ant-test' }, aboutMe: 'Stare O mnie', localDefaultsApplied: true },
+      history: [{ at: 1, kind: 'comment', postKey: 'urn:li:activity:1', author: 'A', postExcerpt: '', instruction: '', generated: 'x', final: 'Old comment', edited: false, language: 'en' }],
+    });
+  });
+  const panel = await context.newPage();
+  await panel.setViewportSize({ width: 400, height: 900 });
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await panel.locator('#settingsToggle').click();
+
+  // 1. Export: a JSON file without API keys by default.
+  const [download] = await Promise.all([panel.waitForEvent('download'), panel.locator('#exportBackup').click()]);
+  assert.match(download.suggestedFilename(), /^asystent-linkedin-kopia-\d{4}-\d{2}-\d{2}\.json$/);
+  const exported = JSON.parse(await readFile(await download.path(), 'utf8'));
+  assert.equal(exported.format, 'lca-backup');
+  assert.equal(exported.version, 1);
+  assert.equal(exported.settings.apiKeys.anthropic, '');
+  assert.equal(exported.settings.aboutMe, 'Stare O mnie');
+  assert.equal(exported.history.length, 1);
+
+  // 2. Import with a preview first.
+  const file = {
+    ...exported,
+    settings: { ...exported.settings, aboutMe: 'Zaimportowane O mnie', length: 'long' },
+    history: [...exported.history, { ...exported.history[0], at: 2, postKey: 'urn:li:activity:2', final: 'Imported comment' }],
+  };
+  await panel.setInputFiles('#importFile', { name: 'kopia.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(file)) });
+  await panel.locator('#importPreview').waitFor({ state: 'visible' });
+  const preview = await panel.locator('#importPreview').textContent();
+  assert.match(preview, /zostaną obecne/);
+  assert.match(preview, /2 wpisy w pliku, w tym 1 nowy/);
+  assert.equal(await panel.locator('#aboutMe').inputValue(), 'Stare O mnie', 'nothing changes before "Zastosuj"');
+  await snap(panel, '3c-settings-import-preview');
+
+  // 3. Apply: new "O mnie", the existing key stays, history merged.
+  await panel.locator('#applyImport').click();
+  await panel.locator('#backupStatus', { hasText: 'Zaimportowano kopię z' }).waitFor();
+  assert.equal(await panel.locator('#aboutMe').inputValue(), 'Zaimportowane O mnie');
+  assert.equal(await panel.locator('#length').inputValue(), 'long', 'imported length applies at once');
+  assert.equal(await panel.locator('#importPreview').isHidden(), true);
+  const stored = await serviceWorker.evaluate(async () => chrome.storage.local.get(['settings', 'history']));
+  assert.equal(stored.settings.apiKeys.anthropic, 'sk-ant-test');
+  assert.equal(stored.settings.aboutMe, 'Zaimportowane O mnie');
+  assert.deepEqual(stored.history.map((e) => e.final), ['Imported comment', 'Old comment']);
+
+  // 4. A foreign file: a specific error and no changes.
+  await panel.setInputFiles('#importFile', { name: 'obcy.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ format: 'x' })) });
+  await panel.locator('#backupStatus', { hasText: 'nie jest kopią' }).waitFor();
+  assert.equal(await panel.locator('#importPreview').isHidden(), true);
+  const after = await serviceWorker.evaluate(async () => (await chrome.storage.local.get('settings')).settings);
+  assert.equal(after.aboutMe, 'Zaimportowane O mnie');
+
+  // 5. Only a Harmonic key: the export status must not claim the file has no keys.
+  await serviceWorker.evaluate(() =>
+    chrome.storage.local.set({ settings: { provider: 'anthropic', apiKeys: { anthropic: '' }, harmonicApiKey: 'h-test', localDefaultsApplied: true } }),
+  );
+  await panel.reload();
+  await panel.locator('#exportIncludeKeys').check();
+  const [harmonicDownload] = await Promise.all([panel.waitForEvent('download'), panel.locator('#exportBackup').click()]);
+  const withHarmonic = JSON.parse(await readFile(await harmonicDownload.path(), 'utf8'));
+  assert.equal(withHarmonic.settings.harmonicApiKey, 'h-test');
+  assert.match(await panel.locator('#backupStatus').textContent(), /razem z kluczami API/);
+
+  await serviceWorker.evaluate(() =>
+    chrome.storage.local.set({ history: [], settings: { provider: 'anthropic', apiKeys: { anthropic: 'sk-ant-test' }, localDefaultsApplied: true } }),
+  );
+  await panel.close();
+});
+
+test('probe script: post mode reports structure without content', async () => {
+  const source = await readFile(path.join(projectRoot, 'scripts', 'diagnose-linkedin.js'), 'utf8');
+  const page = await context.newPage();
+  await page.goto('https://www.linkedin.com/feed/');
+  await page.locator('#editor1').click();
+  const out = await page.evaluate((src) => (0, eval)(src), source);
+  assert.match(out, /^mode: post\n/);
+  assert.match(out, /data:\{/);
+  assert.match(out, /img\.update-components-image__image.*\[src\].* w=\d+/);
+  for (const secret of ['Volteum is heading', 'https://media.licdn.com', 'urn:li:activity:7001', 'Anna Nowak', 'Meet us at Fleet Expo', 'Great news!']) {
+    assert.ok(!out.includes(secret), `probe output leaks "${secret}"`);
+  }
+  assert.equal(await page.evaluate(() => typeof document.body.outerHTML), 'string');
+
+  // The chat bubble keeps the old "nearby" mode.
+  await page.goto('https://www.linkedin.com/feed/shadow-chat/');
+  await page.locator('#shadowEditor').click();
+  const chat = await page.evaluate((src) => (0, eval)(src), source);
+  assert.match(chat, /^mode: nearby\n/);
+  assert.ok(!chat.includes('Czy masz chwilę'), 'no message text');
   await page.close();
 });

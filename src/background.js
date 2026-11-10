@@ -11,6 +11,16 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
+// Alt+Shift+T ("translate-selection"): open the panel and leave a request for it.
+// sidePanel.open() must run synchronously inside the command handler (it needs the
+// user gesture); the panel then reads `translateRequest` on start or on change.
+// See also: translateSelection() and handleTranslateRequest() in src/sidepanel/sidepanel.js.
+chrome.commands.onCommand.addListener((command, tab) => {
+  if (command !== 'translate-selection' || tab?.id == null) return;
+  chrome.sidePanel.open({ tabId: tab.id }).catch((error) => console.warn('[LCA] sidePanel.open failed', error));
+  chrome.storage.session.set({ translateRequest: { tabId: tab.id, at: Date.now() } });
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'lca:bind') {
     const boundPost = {

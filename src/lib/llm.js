@@ -1,6 +1,7 @@
 // Claude API access for the side panel. One Anthropic SDK client covers both
-// providers: Anthropic directly (x-api-key) and OpenRouter through its
-// Anthropic-compatible endpoint (https://openrouter.ai/api, Bearer token).
+// providers: Anthropic directly (`apiKey`; SDK 1.x with API version 2026-10-21
+// sends it as `Authorization: Bearer`) and OpenRouter through its
+// Anthropic-compatible endpoint (https://openrouter.ai/api, `authToken`).
 //
 // Requests run in the side panel (an extension page), not in the LinkedIn page,
 // so the API key never enters LinkedIn's JavaScript context.
@@ -8,7 +9,13 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 // Generous cap: outputs here are short, and hitting the cap would cut a comment mid-sentence.
+// At xhigh/max effort thinking alone can use tens of thousands of tokens, so those
+// levels get a larger cap and a longer wait (docs/2026-11-10-design-0.5.md, section A).
+const LONG_EFFORTS = new Set(['xhigh', 'max']);
 const MAX_TOKENS = 16000;
+const MAX_TOKENS_LONG = 64000;
+const TIMEOUT_MS = 120_000;
+const TIMEOUT_LONG_MS = 300_000;
 
 export class RefusalError extends Error {
   constructor(category) {
@@ -26,7 +33,8 @@ export class RefusalError extends Error {
 export function createClient(config, AnthropicClass = Anthropic) {
   // dangerouslyAllowBrowser: the key is the user's own and lives in their browser profile;
   // the SDK then also sends the `anthropic-dangerous-direct-browser-access` header.
-  const common = { dangerouslyAllowBrowser: true, maxRetries: 2, timeout: 120_000 };
+  const timeout = LONG_EFFORTS.has(config.effort) ? TIMEOUT_LONG_MS : TIMEOUT_MS;
+  const common = { dangerouslyAllowBrowser: true, maxRetries: 2, timeout };
   if (config.provider === 'openrouter') {
     return new AnthropicClass({
       ...common,
@@ -40,8 +48,13 @@ export function createClient(config, AnthropicClass = Anthropic) {
 
 /**
  * Build request params. Exported for unit tests.
- * - Thinking is left at the model default (adaptive on Sonnet 5.5 / Opus 5.5;
- *   Opus 5.5 rejects disabling it); `effort` controls speed vs depth.
+ * - Thinking: by default the parameter is not sent (adaptive on Sonnet 5.5 / Opus 5.5).
+ *   `thinking: 'off'` sends {type: "between_tools"}, which only Sonnet 5.5 accepts and
+ *   only at effort low/medium/high; settings.activeConfig guarantees that, so this
+ *   function trusts the config. `showThinking` asks for summarized thinking, which
+ *   exists only in adaptive mode. Never send {type: "disabled"} or budget_tokens:
+ *   both are rejected (400) by the current models.
+ * - `effort` controls speed vs depth; xhigh/max get a larger max_tokens.
  * - Server-side refusal fallback is enabled only on the Anthropic API, where the
  *   beta exists; OpenRouter gets the plain request.
  * - The system prompt (~1.5k tokens with the style rules) is marked for prompt caching
@@ -57,7 +70,7 @@ export function buildParams(config, { system, messages }) {
   const blocks = (Array.isArray(system) ? system : [system]).filter((text) => text && text.trim());
   const params = {
     model: config.model,
-    max_tokens: MAX_TOKENS,
+    max_tokens: LONG_EFFORTS.has(config.effort) ? MAX_TOKENS_LONG : MAX_TOKENS,
     system:
       config.provider === 'anthropic'
         ? blocks.map((text) => ({ type: 'text', text, cache_control: { type: 'ephemeral' } }))
@@ -66,6 +79,11 @@ export function buildParams(config, { system, messages }) {
   };
   if (config.effort && config.effort !== 'default') {
     params.output_config = { effort: config.effort };
+  }
+  if (config.thinking === 'off') {
+    params.thinking = { type: 'between_tools' };
+  } else if (config.showThinking) {
+    params.thinking = { type: 'adaptive', display: 'summarized' };
   }
   if (config.provider === 'anthropic') {
     params.betas = ['server-side-fallback-2026-07-01'];
@@ -93,14 +111,16 @@ export function finalText(content) {
 }
 
 /**
- * Stream one request and report the growing text.
+ * Stream one request and report the growing text and thinking summary.
  * @param {object} config - active provider config (see settings.activeConfig)
  * @param {{system: string, messages: Array<object>}} request
- * @param {{onText?: (fullText: string) => void, signal?: AbortSignal, client?: object}} [options]
- * @returns {Promise<{text: string, message: object}>} final text and the full API message
- *   (its `content` must be appended unchanged to continue the conversation)
+ * @param {{onText?: (fullText: string) => void, onThinking?: (fullThinking: string) => void,
+ *   signal?: AbortSignal, client?: object}} [options]
+ * @returns {Promise<{text: string, thinking: string, message: object}>} final text, the
+ *   streamed thinking summary (empty unless summarized thinking was requested) and the
+ *   full API message (its `content` must be appended unchanged to continue the conversation)
  */
-export async function streamCompletion(config, request, { onText, signal, client } = {}) {
+export async function streamCompletion(config, request, { onText, onThinking, signal, client } = {}) {
   const api = client ?? createClient(config);
   const params = buildParams(config, request);
   const stream =
@@ -109,21 +129,54 @@ export async function streamCompletion(config, request, { onText, signal, client
       : api.messages.stream(params, { signal });
 
   let text = '';
+  let thinking = '';
   for await (const event of stream) {
     if (event.type === 'content_block_start' && event.content_block?.type === 'fallback') {
-      // Another model takes over after a refusal; restart the visible text.
+      // Another model takes over after a refusal; restart the visible text and thinking.
       text = '';
       onText?.(text);
+      if (thinking) {
+        thinking = '';
+        onThinking?.(thinking);
+      }
     } else if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
       text += event.delta.text;
       onText?.(text);
+    } else if (event.type === 'content_block_delta' && event.delta?.type === 'thinking_delta') {
+      thinking += event.delta.thinking;
+      onThinking?.(thinking);
     }
   }
   const message = await stream.finalMessage();
   if (message.stop_reason === 'refusal') {
     throw new RefusalError(message.stop_details?.category);
   }
-  return { text: finalText(message.content), message };
+  return { text: finalText(message.content), thinking, message };
+}
+
+// Settings groups as named in the panel (see REASONING_GROUPS in src/sidepanel/sidepanel.js).
+const GROUP_LABELS = { write: 'Pisanie i poprawki', analysis: 'Analiza, tłumaczenia i kontrola' };
+
+/**
+ * What to change after a 400 about thinking or effort (e.g. a provider that does not
+ * accept these parameters). The advice must match what buildParams actually sent:
+ * with "Automatyczne" thinking the parameter only appears because of the summary.
+ * @param {string} detail - API error message
+ * @param {{thinking?: string, showThinking?: boolean, purpose?: string}} [config]
+ * @returns {string}
+ */
+function settingsHint(detail, config) {
+  const group = GROUP_LABELS[config?.purpose];
+  const where = group ? `W grupie „${group}” ustaw` : 'Ustaw';
+  // Write settings are frozen for the comment (see sendConversation in the panel).
+  const when = config?.purpose === 'write' ? ' Zmiana zadziała od następnego „Napisz komentarz”.' : '';
+  if (/thinking/i.test(detail)) {
+    if (config?.thinking === 'off') return ` ${where} „Rozumowanie” na „Automatyczne” (ustawienia, ikona ⚙).${when}`;
+    if (config?.showThinking) return ` Wyłącz „Pokaż tok rozumowania” w ustawieniach (ikona ⚙).${when}`;
+    return ` Ustaw „Rozumowanie” na „Automatyczne” i wyłącz „Pokaż tok rozumowania” w ustawieniach (ikona ⚙).${when}`;
+  }
+  if (/output_config|effort/i.test(detail)) return ` ${where} effort na „Domyślna modelu” (ustawienia, ikona ⚙).${when}`;
+  return '';
 }
 
 /**
@@ -154,13 +207,11 @@ export function describeError(err, config) {
   if (err instanceof Anthropic.BadRequestError) {
     // The API body is {type: "error", error: {type, message}}; prefer that human-readable message.
     const detail = err.error?.error?.message || err.message || '';
-    const effortHint = /output_config|effort/i.test(detail)
-      ? ' Ustaw „Głębokość myślenia” na „Domyślna modelu” w ustawieniach.'
-      : '';
-    return `${who} odrzucił zapytanie (400): ${detail}${effortHint}`;
+    return `${who} odrzucił zapytanie (400): ${detail}${settingsHint(detail, config)}`;
   }
   if (err instanceof Anthropic.APIConnectionTimeoutError) {
-    return `${who} nie odpowiedział w ciągu 2 minut. Spróbuj ponownie.`;
+    const minutes = LONG_EFFORTS.has(config?.effort) ? 5 : 2;
+    return `${who} nie odpowiedział w ciągu ${minutes} minut. Spróbuj ponownie albo wybierz niższy effort.`;
   }
   if (err instanceof Anthropic.APIConnectionError) {
     return `Brak połączenia z: ${who}. Sprawdź internet albo czy dostawca działa.`;

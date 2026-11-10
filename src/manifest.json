@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Asystent komentarzy LinkedIn",
   "short_name": "Komentarze LI",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "Pomaga pisać komentarze na LinkedInie z Claude: tłumaczy post, podsuwa pomysły i zamienia polskie polecenie na gotowy komentarz.",
   "minimum_chrome_version": "116",
   "icons": {
@@ -57,6 +57,12 @@
         "default": "Alt+Shift+L"
       },
       "description": "Otwórz asystenta komentarzy"
+    },
+    "translate-selection": {
+      "suggested_key": {
+        "default": "Alt+Shift+T"
+      },
+      "description": "Przetłumacz zaznaczony tekst"
     }
   }
 }

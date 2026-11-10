@@ -59,6 +59,31 @@ function deepQueryAll(selector, root = document) {
   return found;
 }
 
+// Open shadow roots of the page, nested ones included (LinkedIn chat bubbles live in one).
+function openShadowRoots(root = document) {
+  const roots = [];
+  for (const el of root.querySelectorAll('*')) {
+    if (el.shadowRoot) roots.push(el.shadowRoot, ...openShadowRoots(el.shadowRoot));
+  }
+  return roots;
+}
+
+/**
+ * Text the user selected in this frame. A selection inside a shadow root may not
+ * show up in window.getSelection(), so open shadow roots are checked as well
+ * (ShadowRoot.getSelection exists in Chromium).
+ * @returns {string}
+ */
+function selectedText() {
+  const text = String(window.getSelection() || '').trim();
+  if (text) return text;
+  for (const root of openShadowRoots()) {
+    const inner = String(root.getSelection?.() || '').trim();
+    if (inner) return inner;
+  }
+  return '';
+}
+
 async function reportPost(editor, { expand = false } = {}) {
   const post = isMessageEditor(editor)
     ? extractConversation(editor)
@@ -145,7 +170,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'lca:getSelection') {
     // The script runs in every LinkedIn frame and the first reply wins: a frame with a
     // selection answers at once, the top frame answers "nothing selected" a bit later.
-    const text = String(window.getSelection() || '').trim();
+    const text = selectedText();
     if (text) {
       sendResponse({ text, pageUrl: location.href });
       return false;

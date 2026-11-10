@@ -10,9 +10,11 @@ Rozszerzenie do Microsoft Edge (działa też w Chrome), które pomaga pisać kom
 
 To samo działa w **wiadomościach**: wtyczka tłumaczy ostatnie wiadomości rozmówcy, podsuwa pomysły na odpowiedź i wstawia ją do pola wiadomości, niczego nie wysyłając.
 
+Do tego wtyczka tłumaczy zaznaczony tekst i komentarze innych osób pod postem, pokazuje historię Twoich komentarzy i odpowiedzi oraz zapisuje kopię zapasową ustawień, którą wczytasz na innym komputerze.
+
 Komentarz zawsze publikujesz Ty, przyciskiem LinkedIna. Model to Claude Sonnet 5.5 albo Opus 5.5, przez API Anthropic albo przez OpenRouter.
 
-Historia zmian: [`CHANGELOG.md`](CHANGELOG.md). Decyzje projektowe: [`docs/2026-11-09-design.md`](docs/2026-11-09-design.md).
+Historia zmian: [`CHANGELOG.md`](CHANGELOG.md). Decyzje projektowe: [`docs/2026-11-09-design.md`](docs/2026-11-09-design.md), od wersji 0.5.0 także [`docs/2026-11-10-design-0.5.md`](docs/2026-11-10-design-0.5.md).
 
 ## Wymagania
 
@@ -76,18 +78,49 @@ Kliknij w pole wiadomości w rozmowie, na pełnej stronie wiadomości albo w oki
 - Twój styl w wiadomościach uczy się osobno od komentarzy.
 - Gdy wtyczka nie rozpozna nagłówka okienka czatu, imię i profil rozmówcy bierze z jego wiadomości wśród 10 ostatnich.
 
-LinkedIn pokazuje wiadomości na dwa sposoby i wtyczka obsługuje oba: pełna strona `/messaging/` działa w osobnej ramce (iframe), a okienka czatu w głównym oknie są w osadzonym fragmencie strony (shadow DOM). Stan na wersję 0.4.2: odczyt i wstawianie działają na atrapach zbudowanych według struktury prawdziwego LinkedIna, a na samym LinkedInie czekają na sprawdzenie. Jeśli coś nie działa, przygotuj wynik sondy (niżej, „Gdy wtyczka źle odczytuje stronę”).
+LinkedIn pokazuje wiadomości na dwa sposoby i wtyczka obsługuje oba: pełna strona `/messaging/` działa w osobnej ramce (iframe), a okienka czatu w głównym oknie są w osadzonym fragmencie strony (shadow DOM). Odczyt rozmowy i wstawianie odpowiedzi w wersji 0.4.2 działają na prawdziwym LinkedInie (sprawdzone 2026-11-09). Jeśli LinkedIn zmieni budowę czatu i odczyt przestanie działać, przygotuj wynik sondy (niżej, „Gdy wtyczka źle odczytuje stronę”).
 
-Karta **Kontekst** w kroku 1 pokazuje, co jeszcze trafia do modelu: opis autora, podlinkowany artykuł, liczbę komentarzy innych osób i (opcjonalnie) dane z Harmonic.
+Karta **Kontekst** w kroku 1 pokazuje, co jeszcze trafia do modelu: opis autora, podlinkowany artykuł, komentarze innych osób (z autorem i początkiem treści) i (opcjonalnie) dane z Harmonic.
 
 Gdy wtyczka źle odczyta post (LinkedIn często zmienia budowę strony), rozwiń **Pełny tekst posta** i popraw treść. Możesz też zaznaczyć tekst posta myszką i kliknąć **Użyj zaznaczonego tekstu**.
+
+### Tłumaczenie zaznaczenia i komentarzy
+
+- **Zaznaczony tekst:** zaznacz na LinkedInie dowolny fragment (post, komentarz, wiadomość, także w okienku czatu) i kliknij **Tłumacz** w górnym pasku panelu albo naciśnij **Alt+Shift+T**. Tekst w obcym języku wtyczka tłumaczy na polski, a tekst po polsku na angielski. Wynik pojawia się w karcie „Tłumaczenie zaznaczenia” razem z uwagami o idiomach i tonie. Karta nie zmienia wybranego posta i zostaje, gdy klikniesz pole pod innym postem.
+- Do modelu trafia najwyżej 10 000 znaków zaznaczenia. Przy dłuższym karta mówi, że przetłumaczono tylko początek.
+- **Komentarze innych osób:** w karcie **Kontekst** kliknij **Przetłumacz komentarze**. Tłumaczenie każdego komentarza pojawia się pod nim. Wtyczka tłumaczy tylko komentarze, które i tak odczytała razem z postem, i nie czyta niczego więcej ze strony.
+
+### Historia
+
+Przycisk **Historia** w górnym pasku pokazuje komentarze i odpowiedzi, które wstawiasz lub kopiujesz (do 100, najnowsze na górze). Możesz:
+
+- szukać po treści, autorze posta i fragmencie posta, bez polskich znaków („lodz” znajdzie „Łódź”);
+- zawęzić listę do komentarzy albo wiadomości;
+- kliknąć tekst, żeby go rozwinąć, skopiować go albo otworzyć post na LinkedInie (link jest tylko przy postach z rozpoznanym adresem);
+- usunąć wpis przyciskiem **Usuń** (od razu, bez pytania).
+
+Historia powstaje tylko wtedy, gdy w ustawieniach jest włączone „Ucz się z komentarzy, które wstawiam lub kopiuję”. Wpis z rozmowy nie zawiera nic o rozmówcy.
+
+### Skróty klawiszowe
+
+| Skrót | Działanie |
+|---|---|
+| Alt+Shift+L | Otwiera panel wtyczki. |
+| Alt+Shift+T | Otwiera panel i tłumaczy tekst zaznaczony na karcie LinkedIna. |
+| Ctrl+Enter | W polu polecenia: pisze komentarz. |
+
+Skróty zmienisz w `edge://extensions/shortcuts` (w Chrome: `chrome://extensions/shortcuts`). Edge i Chrome używają Alt+Shift+T do przejścia na pasek narzędzi. Jeśli skrót nie tłumaczy, sprawdź na tej stronie, czy jest przypisany do wtyczki, albo ustaw inny, np. Alt+Shift+Y.
 
 ## Ustawienia
 
 | Ustawienie | Działanie |
 |---|---|
 | Dostawca, klucz, model | Sonnet 5.5 jest szybszy i tańszy, Opus 5.5 staranniejszy. Po wybraniu „Inny model…” wpiszesz dowolny identyfikator modelu. |
-| Głębokość myślenia | „Niska” jest najszybsza i wystarcza do komentarzy. „Domyślna modelu” wybierz, jeśli dostawca odrzuca parametr `effort`. |
+| Pisanie i poprawki | Effort i rozumowanie dla pisania komentarza lub odpowiedzi, poprawek i „Konkretniej”. Zmiana działa od następnego „Napisz komentarz”, bo poprawki jednego komentarza muszą iść z tymi samymi ustawieniami. |
+| Analiza, tłumaczenia i kontrola | Effort i rozumowanie dla tłumaczenia posta i pomysłów, tłumaczeń, kontroli jakości i nauki stylu. |
+| Effort | „Niska” jest najszybsza i wystarcza do komentarzy. „Bardzo wysoka” i „Maksymalna” dają najstaranniejszy tekst, ale trwają dłużej (wtyczka czeka do 5 minut) i kosztują więcej. „Domyślna modelu” nie wysyła parametru: Sonnet pracuje wtedy na wysokim, Opus na średnim. |
+| Rozumowanie | „Automatyczne”: model sam decyduje, ile myśleć. „Wyłączone” przyspiesza odpowiedź, ale działa tylko z Sonnet 5.5 przy effort do „Wysoka”. Przy Opusie i przy wyższym effort ta opcja jest nieaktywna. |
+| Pokaż tok rozumowania | Pod tłumaczeniem posta i pod komentarzem pojawia się zwinięte „Jak myślał model”: streszczenie rozumowania. Nie kosztuje więcej, bo model i tak myśli. Przy rozumowaniu „Wyłączone” nie ma czego pokazać. |
 | O mnie | Model korzysta z tych informacji tylko wtedy, gdy pasują do posta, i nie dopisuje faktów spoza nich. |
 | Język komentarza | Domyślnie język posta, do wyboru angielski albo polski. |
 | Od razu tłumacz post | Po wybraniu posta od razu przychodzą tłumaczenie i pomysły. Po wyłączeniu robisz to przyciskiem. |
@@ -97,13 +130,27 @@ Gdy wtyczka źle odczyta post (LinkedIn często zmienia budowę strony), rozwiń
 
 Ton i długość komentarza wybierasz w panelu przy każdym komentarzu. Wtyczka zapamiętuje ostatni wybór.
 
+Przy OpenRouterze wtyczka wysyła effort i rozumowanie tak samo jak do Anthropic. Nie wiadomo, czy OpenRouter je przekazuje. Jeśli zwróci błąd 400, ustaw w obu grupach effort „Domyślna modelu” i rozumowanie „Automatyczne” oraz wyłącz „Pokaż tok rozumowania”. Komunikat błędu podpowiada, którą z tych zmian zrobić.
+
+Ustawienia zapisane przed wersją 0.5.0 miały jeden effort. Po aktualizacji obie grupy dostają tę samą wartość.
+
 ### „O mnie” z pliku lokalnego
 
 Żeby nie wklejać „O mnie” po każdej instalacji, wpisz je w `local-config/defaults.json` (wzór: `local-config/defaults.example.json`). Plik nie trafia do Gita, a `npm run build` kopiuje go do `dist/defaults.json`.
 
 - Przy pierwszym otwarciu panelu wtyczka wpisuje tekst w puste pole „O mnie”. Tekstu, który już tam jest, ani innych ustawień nie zmienia.
 - Dzieje się to raz w danym profilu przeglądarki. Jeśli wyczyścisz pole ręcznie, tekst nie wróci.
-- Plik może zawierać tylko pola `aboutMe`, `provider`, `models`, `effort`, `commentLanguage`, `tone` i `length`. **Klucze API są pomijane** i nigdy nie trafiają do `dist/`.
+- Plik może zawierać tylko pola `aboutMe`, `provider`, `models`, `effort`, `commentLanguage`, `tone` i `length`. `effort` ustawia obie grupy. **Klucze API są pomijane** i nigdy nie trafiają do `dist/`.
+
+### Kopia zapasowa
+
+W ustawieniach, w sekcji **Kopia zapasowa i przeniesienie**:
+
+- **Eksportuj do pliku** zapisuje w folderze pobranych plików `asystent-linkedin-kopia-RRRR-MM-DD.json`. Plik zawiera zapisane ustawienia, „O mnie”, Twój styl (preferencje) i historię.
+- Klucze API (Anthropic, OpenRouter, Harmonic) trafiają do pliku tylko po zaznaczeniu **Dołącz klucze API**. Są tam zwykłym tekstem, więc takiego pliku nie wysyłaj nikomu i usuń go po imporcie.
+- **Importuj z pliku** najpierw pokazuje, co się zmieni, np. „Historia: 87 wpisów w pliku, w tym 12 nowych”. Nic się nie zmienia przed kliknięciem **Zastosuj**.
+- Import zastępuje ustawienia, „O mnie” i Twój styl. Klucz, którego nie ma w pliku, zostaje taki jak teraz. Historię łączy z obecną: przy tym samym poście wygrywa nowszy wpis, łącznie do 100.
+- Kopia to przeniesienie albo zabezpieczenie, a nie synchronizacja. Wpis usunięty z historii wróci, jeśli zaimportujesz starszy plik, w którym jeszcze był.
 
 ### Kontrola jakości
 
@@ -131,7 +178,7 @@ Tłumaczenie zwrotne nie podlega polskim regułom. Ma wiernie oddawać angielski
 
 ### Koszt
 
-Według cennika Anthropic jeden komentarz razem z analizą posta i kontrolą jakości kosztuje ok. 2,7 centa na Sonnecie 5.5 i ok. 5,4 centa na Opusie 5.5 (szacunek bez grafiki i bez poprawek). Grafika, poprawki i nauka stylu podnoszą koszt. Przy API Anthropic stała część promptu trafia do pamięci podręcznej (cache), więc w kolejnych zapytaniach w ciągu 5 minut kosztuje ok. 1/10 ceny. Panel pokazuje szacowany koszt bieżącego posta. OpenRouter może doliczać prowizję.
+Według cennika Anthropic jeden komentarz razem z analizą posta i kontrolą jakości kosztuje ok. 2,7 centa na Sonnecie 5.5 i ok. 5,4 centa na Opusie 5.5 (szacunek bez grafiki i bez poprawek, przy effort „Niska”). Grafika, poprawki, nauka stylu, tłumaczenia i wyższy effort podnoszą koszt: przy wyższym effort model dłużej myśli, a myślenie jest liczone jak tekst odpowiedzi. Przy API Anthropic stała część promptu trafia do pamięci podręcznej (cache), więc w kolejnych zapytaniach w ciągu 5 minut kosztuje ok. 1/10 ceny. Panel pokazuje szacowany koszt bieżącego posta. OpenRouter może doliczać prowizję.
 
 ## Prywatność i bezpieczeństwo
 
@@ -143,6 +190,8 @@ Według cennika Anthropic jeden komentarz razem z analizą posta i kontrolą jak
 - Treść posta trafia do modelu jako materiał do przeczytania, a prompt każe ignorować polecenia ukryte w poście. To ogranicza ryzyko, ale go nie wyklucza, dlatego zawsze czytasz komentarz przed publikacją.
 - Panel pokazuje tekst z LinkedIna i od modelu jako zwykły tekst, nie jako HTML.
 - Historia Twoich komentarzy i odpowiedzi w wiadomościach (łącznie do 100) leży tylko w pamięci lokalnej wtyczki. Ostatnie teksty danego rodzaju idą do modelu jako wzór stylu.
+- Tłumaczenie wysyła do modelu tylko zaznaczony tekst i tylko po kliknięciu **Tłumacz** albo naciśnięciu Alt+Shift+T. Tłumaczenie komentarzy wysyła tylko komentarze odczytane już razem z postem.
+- Plik kopii zapasowej zawiera „O mnie”, Twój styl i historię (Twoje komentarze i fragmenty postów). Klucze API są w nim tylko po zaznaczeniu „Dołącz klucze API”. Trzymaj go jak prywatny dokument.
 - Klucz API leży w pamięci lokalnej wtyczki (`chrome.storage.local`) w tym profilu przeglądarki. Nie synchronizuje się z kontem Microsoft i trafia tylko do wybranego dostawcy. Nie jest szyfrowany, więc nie instaluj wtyczki w profilu, z którego korzystają inne osoby.
 
 ## Aktualizacja i wersje
@@ -158,6 +207,37 @@ npm version minor --no-git-tag-version   # nowa funkcja albo zmiana zachowania
 
 Opcja `--no-git-tag-version` sprawia, że npm nie tworzy własnego commita ani tagu. Nowy numer, wpis w `CHANGELOG.md` i zmiany w kodzie trafiają do jednego commita. Build zatrzymuje się, gdy numery w `package.json` i manifeście się różnią.
 
+## Przeniesienie na inny komputer
+
+Wtyczka nie ma konta ani synchronizacji. Na nowy komputer przenosisz dwie rzeczy: samą wtyczkę (wariant A albo B) i swoje dane (plik kopii zapasowej).
+
+**Wariant A, bez Node.js i bez kodu:**
+
+1. Skopiuj folder `dist/` (np. `C:\code\linkedin_plugin\dist`) w stałe miejsce na nowym komputerze, np. `C:\Narzędzia\asystent-linkedin`.
+2. W Edge otwórz `edge://extensions`, włącz **Tryb dewelopera**, kliknij **Załaduj rozpakowane** i wskaż ten folder.
+3. Nie usuwaj ani nie przenoś folderu: Edge ładuje wtyczkę bezpośrednio z niego. Aktualizacja to podmiana zawartości folderu i **Załaduj ponownie**.
+
+`dist/defaults.json` zawiera Twoje „O mnie” (bez kluczy API), więc przy pierwszym otwarciu panel sam je wpisze. Folderu `dist/` nie dawaj innym osobom.
+
+**Wariant B, z kodu (gdy chcesz budować i aktualizować wtyczkę na nowym komputerze):**
+
+1. Zainstaluj Node.js 20 lub nowszy i Git z dostępem do repozytorium.
+2. Pobierz kod i biblioteki: `git clone git@github.com:auditlog/linkedin-comment-assistant.git`, potem `cd linkedin-comment-assistant` i `npm install`.
+3. Skopiuj ze starego komputera `local-config/defaults.json` do folderu `local-config/` nowej kopii. To jedyny prywatny plik spoza Gita.
+4. Uruchom `npm run build`. Dopiero ten krok przenosi „O mnie” z `local-config/defaults.json` do `dist/defaults.json`.
+5. Załaduj `dist/` w Edge jak w krokach 2–3 sekcji [Instalacja](#instalacja).
+
+**W obu wariantach:** na starym komputerze kliknij w ustawieniach **Eksportuj do pliku**, a na nowym **Importuj z pliku** (sekcja [Kopia zapasowa](#kopia-zapasowa)). Klucze API wpisz na nowym komputerze ponownie albo dołącz je do eksportu i usuń plik po imporcie.
+
+| Plik lub folder | Co zawiera | Kopiować? |
+|---|---|---|
+| `dist/` | gotowa wtyczka i `defaults.json` z „O mnie” | tak, w wariancie A |
+| `local-config/defaults.json` | „O mnie” i ustawienia domyślne, bez kluczy | tak, w wariancie B |
+| `asystent-linkedin-kopia-….json` | ustawienia, styl, historia, opcjonalnie klucze | tak, w obu wariantach; usuń po imporcie |
+| kod z repozytorium | źródła wtyczki | w wariancie B przez `git clone`, nie kopiuj ręcznie |
+| `node_modules/` | biblioteki do budowania | nie, `npm install` pobierze je ponownie |
+| `.cache/` | wyniki sond i biblioteki do testów | nie |
+
 ## Rozwój
 
 ```
@@ -169,6 +249,7 @@ src/
   content/linkedin-messaging.js odczyt rozmowy (wiadomości)
   sidepanel/              panel boczny
   lib/                    prompty, reguły stylu, Twój styl (voice), kontrola jakości (quality),
+                          historia (history.js), kopia zapasowa (backup.js),
                           Harmonic, wywołania API, ustawienia, ceny
 test/unit/      testy jednostkowe (node:test)
 test/e2e/       test całości w Chromium z atrapą LinkedIna (feed, strona wiadomości w ramce,
@@ -188,6 +269,16 @@ LinkedIn często zmienia budowę strony. Żeby poprawić odczyt, potrzebna jest 
 4. Wklej wynik do nowego pliku, np. `C:\code\linkedin_plugin\.cache\probe-wiadomosci-3.txt` (folder `.cache` jest poza Gitem), i napisz, co pokazał panel.
 
 Wynik zawiera tylko nazwy elementów i klas, techniczne identyfikatory elementów (`data-testid`), układ strony, adresy ramek bez parametrów i długości tekstów. Nie zawiera treści wiadomości, imion, linków ani identyfikatorów rozmów. Gdy kursor jest w ramce (pełna strona wiadomości) albo w osadzonym fragmencie strony (okienko czatu), skrypt sam do nich wchodzi. Przed przekazaniem możesz wynik przeczytać.
+
+Pierwsza linia wyniku mówi, co sonda opisała: `mode: post` (kursor w polu komentarza, opis całego posta razem z obrazami, wideo i napisami jako samymi znacznikami, bez adresów) albo `mode: nearby` (np. pole wiadomości).
+
+**Posty z dokumentem, wideo i ankietą (do wersji 0.6.0):** wtyczka nie odczytuje jeszcze treści takich postów. Żeby to dodać, potrzebne są trzy wyniki sondy:
+
+1. Znajdź w feedzie post z dokumentem (karuzela ze stronami PDF), kliknij pole komentarza pod nim, uruchom sondę i zapisz wynik w `.cache\probe-dokument.txt`.
+2. To samo pod postem z wideo: `.cache\probe-wideo.txt`.
+3. To samo pod postem z ankietą: `.cache\probe-ankieta.txt`.
+
+Przy każdym wyniku napisz, co widać w poście (np. „dokument, 8 stron, tytuł na pierwszej stronie”), bez kopiowania treści.
 
 ### Testy
 

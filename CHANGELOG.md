@@ -1,5 +1,18 @@
 # Historia zmian
 
+## 0.5.0 (2026-11-10)
+
+- Effort i rozumowanie w dwóch grupach ustawień: „Pisanie i poprawki” oraz „Analiza, tłumaczenia i kontrola”. Effort od „Niska” do „Maksymalna” albo „Domyślna modelu”. Rozumowanie „Automatyczne” albo „Wyłączone”: to drugie tylko dla Sonnet 5.5 przy effort do „Wysoka”, a formularz blokuje je w pozostałych przypadkach i mówi dlaczego. Ustawienia sprzed 0.5.0 przechodzą bez zmian (obie grupy dostają dotychczasowy effort).
+- Ustawienia pisania obowiązują dla całego komentarza: poprawki i „Konkretniej” idą z ustawieniami z chwili napisania, a zmiana działa od następnego „Napisz komentarz”.
+- Przy effort „Bardzo wysoka” i „Maksymalna” wtyczka pozwala na dłuższą odpowiedź i czeka do 5 minut. Komunikat o przekroczeniu czasu podaje właściwy limit.
+- „Pokaż tok rozumowania”: zwinięte „Jak myślał model” pod tłumaczeniem posta i pod komentarzem, ze streszczeniem rozumowania (bez dodatkowych kosztów).
+- Tłumaczenie zaznaczenia: przycisk **Tłumacz** w panelu i skrót Alt+Shift+T. Tekst obcy tłumaczy na polski, polski na angielski, z uwagami o idiomach i tonie. Działa także w okienku czatu. Najwyżej 10 000 znaków; przy dłuższym zaznaczeniu karta mówi, że przetłumaczono początek. Karta nie znika i tłumaczenie nie jest przerywane, gdy wybierzesz inny post.
+- Tłumaczenie komentarzy innych osób w karcie „Kontekst” (przycisk **Przetłumacz komentarze**). Karta pokazuje te komentarze z autorem i początkiem treści.
+- Widok **Historia**: wyszukiwanie bez polskich znaków, filtr komentarze/wiadomości, rozwijanie tekstu, kopiowanie, link do posta i usuwanie wpisu.
+- Kopia zapasowa w ustawieniach: eksport do pliku JSON (klucze API tylko na życzenie) i import z podglądem zmian. Import zachowuje obecne klucze, gdy w pliku ich nie ma, i łączy historię.
+- Sonda `scripts/diagnose-linkedin.js` ma tryb `post`: pod postem opisuje cały post razem z obrazami, wideo i napisami (same znaczniki, bez adresów i treści). Wyniki dla postów z dokumentem, wideo i ankietą posłużą do wersji 0.6.0.
+- README: instrukcja przeniesienia wtyczki na inny komputer, skróty klawiszowe, nowe sekcje dla tłumaczenia, historii i kopii zapasowej.
+
 ## 0.4.2 (2026-11-09)
 
 - Poprawka: okienka czatu w głównym oknie LinkedIna (np. na `/feed`) są w osadzonym fragmencie strony (shadow DOM). Wtyczka nie widziała kliknięcia w ich pole wiadomości. Teraz rozpoznaje pole także tam i potrafi do niego wstawić tekst.

@@ -2,6 +2,8 @@
 // Stored in chrome.storage.local (never storage.sync, so the API key is not
 // replicated to other devices through the browser account).
 
+import { normalizeModelId } from './pricing.js';
+
 export const PROVIDERS = {
   anthropic: {
     label: 'Anthropic (bezpośrednio)',
@@ -30,14 +32,53 @@ export const EFFORT_LEVELS = {
   low: 'Niska — najszybciej (zalecane)',
   medium: 'Średnia',
   high: 'Wysoka — wolniej, staranniej',
-  default: 'Domyślna modelu (nie wysyłaj parametru)',
+  xhigh: 'Bardzo wysoka — dłużej i drożej',
+  max: 'Maksymalna — najdłużej i najdrożej',
+  default: 'Domyślna modelu (Sonnet: wysoka, Opus: średnia)',
 };
+
+export const THINKING_MODES = {
+  adaptive: 'Automatyczne (zalecane)',
+  off: 'Wyłączone',
+};
+
+// What each model accepts (state: 2026-11, see docs/2026-11-10-design-0.5.md, section A).
+// Sonnet 5.5 can switch thinking off with {type: "between_tools"}, but only at effort
+// low/medium/high; Opus 5.5 rejects every attempt to disable thinking (400).
+// defaultEffort is what the API uses when output_config.effort is not sent.
+/** @type {Record<string, {thinkingOff: boolean, defaultEffort: string}>} */
+export const MODEL_CAPS = {
+  'claude-sonnet-5-5': { thinkingOff: true, defaultEffort: 'high' },
+  'claude-opus-5-5': { thinkingOff: false, defaultEffort: 'medium' },
+};
+
+const THINKING_OFF_EFFORTS = new Set(['low', 'medium', 'high']);
+
+/**
+ * Whether the API accepts thinking switched off for this model and effort.
+ * Unknown models get false, so a custom model id never receives `between_tools`.
+ * @param {string} modelId - Anthropic or OpenRouter id
+ * @param {string} effort - key of EFFORT_LEVELS
+ * @returns {boolean}
+ */
+export function canDisableThinking(modelId, effort) {
+  const caps = MODEL_CAPS[normalizeModelId(modelId)];
+  if (!caps?.thinkingOff) return false;
+  return THINKING_OFF_EFFORTS.has(effort === 'default' ? caps.defaultEffort : effort);
+}
 
 export const DEFAULT_SETTINGS = Object.freeze({
   provider: 'anthropic',
   apiKeys: { anthropic: '', openrouter: '' },
   models: { anthropic: 'claude-sonnet-5-5', openrouter: 'anthropic/claude-sonnet-5.5' },
+  // Two groups (docs/2026-11-10-design-0.5.md, section A): writing and refinements
+  // use effort/thinking; analysis, translations, the quality check and voice
+  // learning use analysisEffort/analysisThinking.
   effort: 'low',
+  thinking: 'adaptive',
+  analysisEffort: 'low',
+  analysisThinking: 'adaptive',
+  showThinking: false,
   aboutMe: '',
   commentLanguage: 'auto',
   autoAnalyze: true,
@@ -123,23 +164,40 @@ export function mergeSettings(stored) {
   };
   if (!PROVIDERS[merged.provider]) merged.provider = DEFAULT_SETTINGS.provider;
   if (!EFFORT_LEVELS[merged.effort]) merged.effort = DEFAULT_SETTINGS.effort;
+  // Settings saved before 0.5.0 have one effort for everything: the analysis group
+  // starts from that value instead of the default.
+  if (!EFFORT_LEVELS[s.analysisEffort]) merged.analysisEffort = merged.effort;
+  if (!THINKING_MODES[merged.thinking]) merged.thinking = DEFAULT_SETTINGS.thinking;
+  if (!THINKING_MODES[merged.analysisThinking]) merged.analysisThinking = DEFAULT_SETTINGS.analysisThinking;
+  merged.showThinking = merged.showThinking === true;
   return merged;
 }
 
 /**
  * Resolve the config used for API calls.
+ * A stored "off" that the model or effort does not allow (e.g. after switching to
+ * Opus or to xhigh) becomes "adaptive" here, so a request never gets a 400 for it.
  * @param {ReturnType<typeof mergeSettings>} settings
- * @returns {{provider: string, providerLabel: string, baseURL: string, apiKey: string, model: string, effort: string}}
+ * @param {'write'|'analysis'} [purpose] - which settings group to use
+ * @returns {{provider: string, providerLabel: string, baseURL: string, apiKey: string, model: string,
+ *   effort: string, thinking: 'adaptive'|'off', showThinking: boolean, purpose: 'write'|'analysis'}}
  */
-export function activeConfig(settings) {
+export function activeConfig(settings, purpose = 'write') {
   const provider = PROVIDERS[settings.provider] ? settings.provider : DEFAULT_SETTINGS.provider;
+  const model = (settings.models?.[provider] || DEFAULT_SETTINGS.models[provider]).trim();
+  const analysis = purpose === 'analysis';
+  const effort = (analysis ? settings.analysisEffort : settings.effort) || DEFAULT_SETTINGS.effort;
+  const wanted = analysis ? settings.analysisThinking : settings.thinking;
   return {
     provider,
     providerLabel: PROVIDERS[provider].label,
     baseURL: PROVIDERS[provider].baseURL,
     apiKey: (settings.apiKeys?.[provider] || '').trim(),
-    model: (settings.models?.[provider] || DEFAULT_SETTINGS.models[provider]).trim(),
-    effort: settings.effort,
+    model,
+    effort,
+    thinking: wanted === 'off' && canDisableThinking(model, effort) ? 'off' : 'adaptive',
+    showThinking: settings.showThinking === true,
+    purpose: analysis ? 'analysis' : 'write',
   };
 }
 

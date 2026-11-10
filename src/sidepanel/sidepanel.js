@@ -14,14 +14,21 @@ import {
   mergeSettings,
   PROVIDERS,
   EFFORT_LEVELS,
+  THINKING_MODES,
+  canDisableThinking,
 } from '../lib/settings.js';
 import {
   buildSystemPrompt,
   buildAnalysisMessages,
   buildCommentMessages,
   buildRefineMessage,
+  buildTranslateMessages,
+  buildTranslateCommentsMessages,
   ANALYSIS_TAGS,
   COMMENT_TAGS,
+  TRANSLATE_TAGS,
+  TRANSLATE_COMMENTS_TAGS,
+  MAX_SELECTION_CHARS,
   TONES,
   LENGTHS,
   COMMENT_LANGUAGES,
@@ -34,6 +41,7 @@ import { cleanPostText, fallbackPostKey } from '../lib/post-text.js';
 import {
   createHistoryEntry,
   addToHistory,
+  HISTORY_LIMIT,
   pickExamples,
   buildVoiceBlock,
   editsSince,
@@ -44,6 +52,18 @@ import {
 } from '../lib/voice.js';
 import { heuristicIssues, buildCheckMessages, parseIssues, buildSpecificFeedback, CHECK_TAGS } from '../lib/quality.js';
 import { fetchHarmonicContext, formatBackground, formatMoney } from '../lib/harmonic.js';
+import { filterHistory, postUrl, removeEntry } from '../lib/history.js';
+import {
+  buildBackup,
+  backupFileName,
+  parseBackup,
+  mergeHistory,
+  applyBackupSettings,
+  describeImport,
+  MAX_BACKUP_BYTES,
+  BACKUP_TOO_LARGE,
+  backupHasKeys,
+} from '../lib/backup.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -61,10 +81,23 @@ const state = {
   imageBlocksPromise: null,
   analysisRaw: '',
   conversation: [], // Claude messages of the comment thread for the current post
+  // Config of the "Pisanie i poprawki" group, frozen by writeComment for the whole thread:
+  // with thinking off the API forbids changing effort mid-conversation, and a changed
+  // thinking setting would invalidate the cache. New settings apply from the next comment.
+  writeConfig: null,
+  analysisThinking: '', // streamed thinking summary of the analysis (showThinking)
+  resultThinking: '', // streamed thinking summary of the last comment reply
+  lastResultThinking: '',
   lastGeneratedComment: '',
   lastResultRaw: '', // raw text of the last successful comment reply (re-rendered after a failed refine)
   postCostUsd: 0,
-  controllers: { analysis: null, comment: null, check: null },
+  controllers: { analysis: null, comment: null, check: null, translateComments: null },
+  commentTranslations: [], // Polish translations of post.existingComments, same order
+  // Translation of a selection: deliberately outside `controllers`, so switching posts
+  // (setPost -> abortAll) neither stops it nor clears its card.
+  translateController: null,
+  translateRaw: '',
+  lastTranslateAt: 0,
 };
 
 // --- small UI helpers -------------------------------------------------------
@@ -107,8 +140,9 @@ function cancelRender(key) {
   pendingFrames.delete(key);
 }
 
-function config() {
-  return activeConfig(state.settings);
+/** Current API config of a settings group; single requests use "analysis". */
+function config(purpose = 'analysis') {
+  return activeConfig(state.settings, purpose);
 }
 
 function ensureConfigOrExplain(statusEl) {
@@ -168,15 +202,21 @@ function setPost(post) {
   showPendingPost(null);
   state.post = post;
   state.analysisRaw = '';
+  state.commentTranslations = [];
   state.conversation = [];
+  state.writeConfig = null;
   state.lastGeneratedComment = '';
   state.lastResultRaw = '';
+  state.analysisThinking = '';
+  state.resultThinking = '';
+  state.lastResultThinking = '';
   state.postLanguage = null;
   state.check = { status: 'idle', issues: [], checkedText: '', error: '' };
   state.postCostUsd = 0;
   state.includeImages = state.settings.includeImages;
   state.imageBlocksPromise = null;
   $('costLine').textContent = '';
+  setStatus($('translateCommentsStatus'), '');
   $('instruction').value = '';
   $('commentText').value = '';
   setStatus($('insertStatus'), '');
@@ -310,6 +350,121 @@ function useManual() {
   setPost({ key: fallbackPostKey('', text), author: '', text, replyTo: null, imageUrls: [], tabId: null, editorToken: null, manual: true });
 }
 
+// --- translation of selected text --------------------------------------------
+
+const TRANSLATE_MESSAGES = {
+  noSelection: 'Na stronie nie ma zaznaczonego tekstu. Zaznacz tekst na LinkedInie i spróbuj ponownie.',
+  unreachable: 'Tłumaczenie zaznaczenia działa na otwartej karcie LinkedIna. Odśwież kartę, jeśli wtyczka była przed chwilą instalowana lub aktualizowana.',
+  truncated: 'Przetłumaczono pierwsze 10 000 znaków zaznaczenia.',
+};
+
+function renderTranslation({ streaming = false } = {}) {
+  const parsed = parseTagged(state.translateRaw, TRANSLATE_TAGS);
+  $('translateResult').textContent = parsed.translation || '';
+  const notes = parseBullets(parsed.notes).filter((n) => !/^brak uwag\.?$/i.test(n));
+  $('translateNotes').hidden = notes.length === 0;
+  $('translateNotes').replaceChildren(
+    ...notes.map((note) => {
+      const li = document.createElement('li');
+      li.textContent = note;
+      return li;
+    }),
+  );
+  $('copyTranslation').disabled = streaming || !parsed.translation;
+}
+
+/**
+ * Translate the text selected on the page (a post, a comment, a message):
+ * other languages into Polish, Polish into English. Independent of the selected post.
+ * @param {{tabId?: number}} [options] - the tab with the selection; the active tab by default
+ */
+async function translateSelection({ tabId } = {}) {
+  if ($('mainView').hidden) showView('main');
+  const status = $('translateStatus');
+  $('translateCard').hidden = false;
+  state.translateController?.abort();
+  state.translateController = null;
+  state.translateRaw = '';
+  $('translateSource').textContent = '';
+  renderTranslation();
+  if (!ensureConfigOrExplain(status)) return;
+
+  let text = '';
+  try {
+    const id = tabId ?? (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+    if (id == null) throw new Error('no tab');
+    const response = await chrome.tabs.sendMessage(id, { type: 'lca:getSelection' });
+    text = String(response?.text || '').trim();
+  } catch {
+    setStatus(status, TRANSLATE_MESSAGES.unreachable, 'error');
+    return;
+  }
+  if (!text) {
+    setStatus(status, TRANSLATE_MESSAGES.noSelection, 'error');
+    return;
+  }
+  const truncated = text.length > MAX_SELECTION_CHARS;
+  if (truncated) text = text.slice(0, MAX_SELECTION_CHARS);
+  $('translateSource').textContent = `„${text.slice(0, 120)}${text.length > 120 ? '…' : ''}”`;
+
+  const controller = new AbortController();
+  state.translateController = controller;
+  const cfg = config('analysis');
+  setStatus(status, 'Tłumaczę…');
+  try {
+    const { text: raw } = await streamCompletion(
+      cfg,
+      { system: buildSystemPrompt(state.settings), messages: buildTranslateMessages(text) },
+      {
+        signal: controller.signal,
+        onText: (partial) => {
+          state.translateRaw = partial;
+          scheduleRender('translate', () => renderTranslation({ streaming: true }));
+        },
+      },
+    );
+    state.translateRaw = raw;
+    setStatus(status, truncated ? TRANSLATE_MESSAGES.truncated : '', truncated ? 'warn' : '');
+  } catch (error) {
+    const msg = describeError(error, cfg);
+    if (msg) setStatus(status, msg, 'error');
+  } finally {
+    if (state.translateController === controller) {
+      state.translateController = null;
+      cancelRender('translate');
+      renderTranslation();
+    }
+  }
+}
+
+/** Run a request left by the Alt+Shift+T command (src/background.js), at most once and only when fresh. */
+function handleTranslateRequest(request) {
+  if (!request || request.at === state.lastTranslateAt) return;
+  chrome.storage.session.remove('translateRequest');
+  if (Date.now() - request.at > 10_000) return; // stale: the panel was opened much later
+  state.lastTranslateAt = request.at;
+  translateSelection({ tabId: request.tabId });
+}
+
+function closeTranslation() {
+  state.translateController?.abort();
+  state.translateController = null;
+  state.translateRaw = '';
+  $('translateCard').hidden = true;
+  setStatus($('translateStatus'), '');
+}
+
+async function copyTranslation() {
+  const text = parseTagged(state.translateRaw, TRANSLATE_TAGS).translation;
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    setStatus($('translateStatus'), 'Skopiowano.', 'ok');
+  } catch {
+    setStatus($('translateStatus'), 'Nie udało się skopiować. Zaznacz tłumaczenie i naciśnij Ctrl+C.', 'error');
+  }
+}
+
 // --- context (LinkedIn extras + optional Harmonic) ---------------------------
 
 function startHarmonic(post) {
@@ -350,11 +505,6 @@ function renderContext() {
   if (post) {
     if (post.authorHeadline) items.push(`${postKind(post) === 'message' ? 'Rozmówca' : 'Autor'}: ${post.authorHeadline}`);
     if (post.linkPreview?.title) items.push(`Udostępniony link: ${post.linkPreview.title}`);
-    const others = post.existingComments || [];
-    if (others.length) {
-      const names = others.map((c) => c.author).filter(Boolean).join(', ');
-      items.push(`Komentarze pod postem uwzględnione przy pisaniu: ${others.length}${names ? ` (${names})` : ''}`);
-    }
     const h = state.harmonic;
     if (h.status === 'loading') items.push('Harmonic: pobieram dane…');
     if (h.status === 'error') items.push(`Harmonic: ${h.error}`);
@@ -376,7 +526,9 @@ function renderContext() {
       if (!h.company && !h.person) items.push('Harmonic: brak danych o tej firmie lub osobie.');
     }
   }
-  $('contextCard').hidden = items.length === 0;
+  const others = otherComments(post);
+  $('contextCard').hidden = items.length === 0 && others.length === 0;
+  $('contextList').hidden = items.length === 0;
   $('contextList').replaceChildren(
     ...items.map((text) => {
       const li = document.createElement('li');
@@ -384,6 +536,78 @@ function renderContext() {
       return li;
     }),
   );
+  renderOtherComments(others);
+}
+
+/** Comments read together with the post (none for conversations). */
+function otherComments(post = state.post) {
+  if (!post || postKind(post) === 'message') return [];
+  return (post.existingComments || []).filter((c) => c && c.text);
+}
+
+function renderOtherComments(others) {
+  $('otherCommentsWrap').hidden = others.length === 0;
+  $('otherComments').replaceChildren(
+    ...others.map((c, i) => {
+      const li = document.createElement('li');
+      const author = document.createElement('strong');
+      author.textContent = c.author || 'Autor nieznany';
+      li.append(author, `: ${c.text.slice(0, 200)}${c.text.length > 200 ? '…' : ''}`);
+      const translation = state.commentTranslations[i];
+      if (translation) {
+        const p = document.createElement('p');
+        p.className = 'comment-translation';
+        p.textContent = translation;
+        li.append(p);
+      }
+      return li;
+    }),
+  );
+  const running = Boolean(state.controllers.translateComments);
+  $('translateComments').hidden = others.length === 0 || (state.commentTranslations.length > 0 && !running);
+  $('translateComments').disabled = running;
+}
+
+/** Translate the comments under the post into Polish (one request, analysis settings). */
+async function translateComments() {
+  const others = otherComments();
+  if (others.length === 0) return;
+  const status = $('translateCommentsStatus');
+  if (!ensureConfigOrExplain(status)) return;
+  state.controllers.translateComments?.abort();
+  const controller = new AbortController();
+  state.controllers.translateComments = controller;
+  const key = state.post.key;
+  const cfg = config('analysis');
+  const parse = (raw) => parseItems(parseTagged(raw, TRANSLATE_COMMENTS_TAGS).translations, 'item');
+  state.commentTranslations = [];
+  setStatus(status, 'Tłumaczę komentarze…');
+  renderContext();
+  try {
+    const { text, message } = await streamCompletion(
+      cfg,
+      { system: buildSystemPrompt(state.settings), messages: buildTranslateCommentsMessages(others) },
+      {
+        signal: controller.signal,
+        onText: (partial) => {
+          state.commentTranslations = parse(partial);
+          scheduleRender('comments', renderContext);
+        },
+      },
+    );
+    state.commentTranslations = parse(text);
+    setStatus(status, state.commentTranslations.length ? '' : 'Model nie zwrócił tłumaczeń. Spróbuj ponownie.', state.commentTranslations.length ? '' : 'error');
+    addCost(message);
+  } catch (error) {
+    const msg = describeError(error, cfg);
+    if (msg) setStatus(status, msg, 'error');
+  } finally {
+    if (state.controllers.translateComments === controller) state.controllers.translateComments = null;
+    if (state.post?.key === key) {
+      cancelRender('comments');
+      renderContext();
+    }
+  }
 }
 
 // --- analysis ---------------------------------------------------------------
@@ -391,6 +615,8 @@ function renderContext() {
 function renderAnalysis() {
   const parsed = parseTagged(state.analysisRaw, ANALYSIS_TAGS);
   $('translation').textContent = parsed.translation || '';
+  $('analysisReasoningText').textContent = state.analysisThinking;
+  $('analysisReasoning').hidden = !state.analysisThinking;
   $('imageNote').hidden = !parsed.image_note;
   $('imageNote').textContent = parsed.image_note ? `Na grafice: ${parsed.image_note}` : '';
   const ideas = parseItems(parsed.ideas, 'idea');
@@ -426,18 +652,23 @@ async function runAnalysis() {
   const controller = new AbortController();
   state.controllers.analysis = controller;
   state.analysisRaw = '';
+  state.analysisThinking = '';
   renderAnalysis();
   setStatus(status, 'Tłumaczę post i szukam pomysłów…');
   try {
     await waitForHarmonic(3000);
     const images = await imageBlocks();
     const { text, message } = await streamCompletion(
-      config(),
+      config('analysis'),
       { system: buildSystemPrompt(state.settings), messages: buildAnalysisMessages(state.post, images) },
       {
         signal: controller.signal,
         onText: (partial) => {
           state.analysisRaw = partial;
+          scheduleRender('analysis', renderAnalysis);
+        },
+        onThinking: (thinking) => {
+          state.analysisThinking = thinking;
           scheduleRender('analysis', renderAnalysis);
         },
       },
@@ -447,7 +678,7 @@ async function runAnalysis() {
     setStatus(status, '');
     addCost(message);
   } catch (error) {
-    const msg = describeError(error, config());
+    const msg = describeError(error, config('analysis'));
     if (msg) setStatus(status, msg, 'error');
   } finally {
     if (state.controllers.analysis === controller) state.controllers.analysis = null;
@@ -464,6 +695,8 @@ function renderResult(raw, { streaming }) {
   $('commentText').value = comment;
   $('commentText').readOnly = streaming;
   $('backTranslation').textContent = parsed.back_translation || '';
+  $('resultReasoningText').textContent = state.resultThinking;
+  $('resultReasoning').hidden = !state.resultThinking;
   const notes = parseBullets(parsed.notes).filter((n) => !/^brak uwag\.?$/i.test(n));
   $('notesWrap').hidden = notes.length === 0;
   $('notes').replaceChildren(
@@ -493,13 +726,23 @@ async function sendConversation(statusText) {
   state.controllers.check?.abort();
   state.check = { status: 'idle', issues: [], checkedText: '', error: '' };
   $('qualityBox').hidden = true;
+  const cfg = state.writeConfig ?? config('write');
+  let partialRaw = '';
+  state.resultThinking = '';
   try {
     const { text, message } = await streamCompletion(
-      config(),
+      cfg,
       { system: writingSystem(), messages: state.conversation },
       {
         signal: controller.signal,
-        onText: (partial) => scheduleRender('result', () => renderResult(partial, { streaming: true })),
+        onText: (partial) => {
+          partialRaw = partial;
+          scheduleRender('result', () => renderResult(partialRaw, { streaming: true }));
+        },
+        onThinking: (thinking) => {
+          state.resultThinking = thinking;
+          scheduleRender('result', () => renderResult(partialRaw, { streaming: true }));
+        },
       },
     );
     // Append the full content unchanged (thinking blocks included) to continue the thread.
@@ -507,15 +750,17 @@ async function sendConversation(statusText) {
     cancelRender('result');
     renderResult(text, { streaming: false });
     state.lastResultRaw = text;
+    state.lastResultThinking = state.resultThinking;
     state.lastGeneratedComment = $('commentText').value;
     runCheck();
     setStatus(status, message.stop_reason === 'max_tokens' ? 'Odpowiedź została ucięta (limit długości). Spróbuj „Popraw: krócej”.' : '', message.stop_reason === 'max_tokens' ? 'error' : '');
     addCost(message);
   } catch (error) {
     state.conversation.pop();
-    const msg = describeError(error, config());
+    const msg = describeError(error, cfg);
     if (msg) setStatus(status, msg, 'error');
     cancelRender('result');
+    state.resultThinking = state.lastResultThinking;
     renderResult(state.lastResultRaw, { streaming: false });
   } finally {
     if (state.controllers.comment === controller) state.controllers.comment = null;
@@ -546,6 +791,8 @@ async function writeComment() {
   });
   state.lastGeneratedComment = '';
   state.lastResultRaw = '';
+  state.lastResultThinking = '';
+  state.writeConfig = config('write');
   await sendConversation('Piszę komentarz…');
 }
 
@@ -618,7 +865,7 @@ function renderQuality() {
 /** Ask the model whether the comment adds something (runs after each draft, non-blocking). */
 async function runCheck() {
   const comment = $('commentText').value.trim();
-  if (!comment || !state.post || validateConfig(config())) return;
+  if (!comment || !state.post || validateConfig(config('analysis'))) return;
   state.controllers.check?.abort();
   const controller = new AbortController();
   state.controllers.check = controller;
@@ -626,7 +873,7 @@ async function runCheck() {
   renderQuality();
   try {
     const { text, message } = await streamCompletion(
-      config(),
+      config('analysis'),
       {
         system: buildSystemPrompt(state.settings),
         messages: buildCheckMessages({ post: state.post, comment, instruction: $('instruction').value }),
@@ -638,7 +885,7 @@ async function runCheck() {
     state.check = { status: issues.length || /warn/i.test(parsed.verdict || '') ? 'warn' : 'ok', issues, checkedText: comment, error: '' };
     addCost(message);
   } catch (error) {
-    const msg = describeError(error, config());
+    const msg = describeError(error, config('analysis'));
     if (msg === null) return; // aborted by a newer draft
     state.check = { status: 'error', issues: [], checkedText: comment, error: msg };
   } finally {
@@ -702,7 +949,7 @@ async function learnVoice({ statusEl, append = false, kinds = ['comment', 'messa
   try {
     for (const kind of todo) {
       const fields = VOICE_FIELDS[kind];
-      const { text, message } = await streamCompletion(config(), {
+      const { text, message } = await streamCompletion(config('analysis'), {
         system: buildSystemPrompt(state.settings),
         messages: buildLearnMessages(state.history, state.settings[fields.notes], kind),
       });
@@ -717,7 +964,7 @@ async function learnVoice({ statusEl, append = false, kinds = ['comment', 'messa
     renderVoiceStats();
     note(`Zaktualizowano Twoje preferencje stylu dla: ${done.join(' i ')} (Ustawienia → Twój styl).`, 'ok');
   } catch (error) {
-    note(`Nie udało się zaktualizować preferencji stylu: ${describeError(error, config()) || error.message}`, 'error');
+    note(`Nie udało się zaktualizować preferencji stylu: ${describeError(error, config('analysis')) || error.message}`, 'error');
   } finally {
     state.learning = false;
   }
@@ -802,12 +1049,147 @@ async function insertComment() {
 
 // --- settings view ----------------------------------------------------------
 
+/** Show one of the panel views; the topbar buttons reflect which one is open. */
+function showView(name) {
+  $('mainView').hidden = name !== 'main';
+  $('settingsView').hidden = name !== 'settings';
+  $('historyView').hidden = name !== 'history';
+  $('settingsToggle').setAttribute('aria-expanded', String(name === 'settings'));
+  $('historyToggle').setAttribute('aria-expanded', String(name === 'history'));
+  if (name === 'history') renderHistory();
+}
+
+// --- history view -------------------------------------------------------------
+
+const HISTORY_EMPTY =
+  'Brak zapisanych tekstów. Wtyczka zapisuje komentarze i odpowiedzi, które wstawiasz lub kopiujesz, gdy w ustawieniach jest włączone „Ucz się z komentarzy…”.';
+
+function renderHistory() {
+  const entries = filterHistory(state.history, { kind: $('historyKind').value, query: $('historySearch').value });
+  $('historyCount').textContent = `${state.history.length} ze ${HISTORY_LIMIT}`;
+  $('historyEmpty').hidden = entries.length > 0;
+  $('historyEmpty').textContent = state.history.length === 0 ? HISTORY_EMPTY : 'Żaden tekst nie pasuje do wyszukiwania.';
+  $('historyList').replaceChildren(...entries.map(historyItem));
+}
+
+function historyItem(entry) {
+  const li = document.createElement('li');
+  li.className = 'history-item';
+
+  const meta = document.createElement('p');
+  meta.className = 'history-meta';
+  const date = document.createElement('span');
+  date.textContent = new Date(entry.at).toLocaleString('pl-PL', { dateStyle: 'medium', timeStyle: 'short' });
+  const kind = document.createElement('span');
+  kind.className = 'badge';
+  kind.textContent = entry.kind === 'message' ? 'Wiadomość' : 'Komentarz';
+  meta.append(date, kind);
+  if (entry.edited) {
+    const edited = document.createElement('span');
+    edited.className = 'badge';
+    edited.textContent = 'poprawiony ręcznie';
+    meta.append(edited);
+  }
+  li.append(meta);
+
+  if (entry.author || entry.postExcerpt) {
+    const post = document.createElement('p');
+    post.className = 'history-post';
+    post.textContent = [entry.author, entry.postExcerpt].filter(Boolean).join(': ');
+    li.append(post);
+  }
+
+  const text = document.createElement('p');
+  text.className = 'history-text';
+  text.textContent = entry.final;
+  text.tabIndex = 0;
+  text.title = 'Kliknij, aby rozwinąć lub zwinąć';
+  text.setAttribute('aria-expanded', 'false');
+  const toggle = () => text.setAttribute('aria-expanded', String(text.classList.toggle('expanded')));
+  text.addEventListener('click', toggle);
+  text.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      toggle();
+    }
+  });
+  li.append(text);
+
+  const actions = document.createElement('div');
+  actions.className = 'row';
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'secondary small';
+  copy.textContent = 'Kopiuj';
+  copy.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(entry.final);
+      copy.textContent = 'Skopiowano';
+    } catch {
+      copy.textContent = 'Nie udało się skopiować';
+    }
+    setTimeout(() => {
+      copy.textContent = 'Kopiuj';
+    }, 1500);
+  });
+  actions.append(copy);
+  const url = postUrl(entry);
+  if (url) {
+    const open = document.createElement('a');
+    open.className = 'history-open';
+    open.href = url;
+    open.target = '_blank';
+    open.rel = 'noopener';
+    open.textContent = 'Otwórz post';
+    actions.append(open);
+  }
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'link';
+  remove.textContent = 'Usuń';
+  remove.addEventListener('click', async () => {
+    // Immediate, without confirmation (design decision); one entry is cheap to lose.
+    state.history = removeEntry(state.history, entry);
+    await chrome.storage.local.set({ history: state.history });
+    renderHistory();
+  });
+  actions.append(remove);
+  li.append(actions);
+  return li;
+}
+
 function showSettings(show, { intro = false } = {}) {
-  $('settingsView').hidden = !show;
-  $('mainView').hidden = show;
-  $('settingsToggle').setAttribute('aria-expanded', String(show));
+  showView(show ? 'settings' : 'main');
   $('settingsIntro').hidden = !intro;
   if (show) renderSettingsForm();
+}
+
+// [effort select, thinking select, hint] of each settings group.
+const REASONING_GROUPS = [
+  ['effort', 'thinking', 'thinkingHint'],
+  ['analysisEffort', 'analysisThinking', 'analysisThinkingHint'],
+];
+
+function formModel() {
+  return $('modelSelect').value === '__custom' ? $('modelCustom').value.trim() : $('modelSelect').value;
+}
+
+/**
+ * Allow "Wyłączone" only where the API accepts it (Sonnet 5.5, effort up to high).
+ * A blocked choice falls back to "Automatyczne", and the hint says why, so the form
+ * can never save a combination that ends in a 400 (activeConfig guards it as well).
+ */
+function renderThinkingAvailability() {
+  const model = formModel();
+  for (const [effortId, thinkingId, hintId] of REASONING_GROUPS) {
+    const off = $(thinkingId).querySelector('option[value="off"]');
+    if (!off) continue; // selects not filled yet (first render of the form)
+    const allowed = canDisableThinking(model, $(effortId).value);
+    off.disabled = !allowed;
+    if (!allowed && $(thinkingId).value === 'off') $(thinkingId).value = 'adaptive';
+    $(hintId).hidden = allowed;
+    $(hintId).textContent = allowed ? '' : 'Wyłączenie rozumowania działa tylko z Sonnet 5.5 przy effort do „Wysoka”.';
+  }
 }
 
 let formProvider = 'anthropic';
@@ -836,6 +1218,11 @@ function renderSettingsForm() {
   draft = { apiKeys: { ...s.apiKeys }, models: { ...s.models } };
   renderProviderFields();
   fillSelect($('effort'), EFFORT_LEVELS, s.effort);
+  fillSelect($('thinking'), THINKING_MODES, s.thinking);
+  fillSelect($('analysisEffort'), EFFORT_LEVELS, s.analysisEffort);
+  fillSelect($('analysisThinking'), THINKING_MODES, s.analysisThinking);
+  $('showThinking').checked = s.showThinking;
+  renderThinkingAvailability();
   fillSelect($('commentLanguage'), COMMENT_LANGUAGES, s.commentLanguage);
   $('aboutMe').value = s.aboutMe;
   $('autoAnalyze').checked = s.autoAnalyze;
@@ -870,6 +1257,7 @@ function renderProviderFields() {
   fillSelect($('modelSelect'), options, known ? current : '__custom');
   $('modelCustom').hidden = known;
   $('modelCustom').value = known ? '' : current;
+  renderThinkingAvailability();
 }
 
 function readSettingsForm() {
@@ -880,6 +1268,10 @@ function readSettingsForm() {
     apiKeys: draft.apiKeys,
     models: draft.models,
     effort: $('effort').value,
+    thinking: $('thinking').value,
+    analysisEffort: $('analysisEffort').value,
+    analysisThinking: $('analysisThinking').value,
+    showThinking: $('showThinking').checked,
     aboutMe: $('aboutMe').value.trim(),
     commentLanguage: $('commentLanguage').value,
     autoAnalyze: $('autoAnalyze').checked,
@@ -908,6 +1300,88 @@ async function saveSettingsForm(event) {
   setTimeout(() => showSettings(false), 600);
 }
 
+// --- backup -------------------------------------------------------------------
+
+let pendingImport = null; // parsed backup waiting for "Zastosuj"
+
+function formatBackupDate(iso) {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? 'nieznanego dnia' : date.toLocaleString('pl-PL', { dateStyle: 'long', timeStyle: 'short' });
+}
+
+/** Save the stored settings and history to a JSON file (a download; no extra permission). */
+function exportBackup() {
+  const now = Date.now();
+  const backup = buildBackup({
+    settings: state.settings,
+    history: state.history,
+    includeKeys: $('exportIncludeKeys').checked,
+    extensionVersion: chrome.runtime.getManifest().version,
+    now,
+  });
+  const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = backupFileName(now);
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  setStatus(
+    $('backupStatus'),
+    `Zapisano plik ${link.download} w folderze pobranych plików. Kopia zawiera zapisane ustawienia${backupHasKeys(backup.settings) ? ' razem z kluczami API' : ' bez kluczy API'}.`,
+    'ok',
+  );
+}
+
+function hideImportPreview() {
+  pendingImport = null;
+  $('importPreview').hidden = true;
+}
+
+/** Read the chosen file and show what an import would change; nothing is saved yet. */
+async function readImportFile() {
+  const input = $('importFile');
+  const file = input.files?.[0];
+  input.value = ''; // choosing the same file again must fire "change"
+  hideImportPreview();
+  if (!file) return;
+  // Check the size before reading, so a huge wrong file is never loaded into memory.
+  const result = file.size > MAX_BACKUP_BYTES ? { ok: false, error: BACKUP_TOO_LARGE } : parseBackup(await file.text());
+  if (!result.ok) {
+    setStatus($('backupStatus'), result.error, 'error');
+    return;
+  }
+  pendingImport = result.backup;
+  $('importPreviewTitle').textContent = `Kopia z ${formatBackupDate(result.backup.exportedAt)}. Po zastosowaniu:`;
+  $('importPreviewList').replaceChildren(
+    ...describeImport({ settings: state.settings, history: state.history }, result.backup).map((line) => {
+      const li = document.createElement('li');
+      li.textContent = line;
+      return li;
+    }),
+  );
+  $('importPreview').hidden = false;
+  setStatus($('backupStatus'), '');
+}
+
+async function applyImport() {
+  if (!pendingImport) return;
+  const backup = pendingImport;
+  const settings = applyBackupSettings(state.settings, backup.settings);
+  const history = mergeHistory(state.history, backup.history);
+  await saveSettings(chrome.storage.local, settings);
+  await chrome.storage.local.set({ history });
+  state.settings = settings;
+  state.history = history;
+  hideImportPreview();
+  renderSettingsForm();
+  // The main view's selects were filled at start; show the imported choices now.
+  $('tone').value = settings.tone;
+  $('length').value = settings.length;
+  setStatus($('backupStatus'), `Zaimportowano kopię z ${formatBackupDate(backup.exportedAt)}.`, 'ok');
+}
+
 async function testConnection() {
   const candidate = readSettingsForm();
   const cfg = activeConfig(candidate);
@@ -918,8 +1392,9 @@ async function testConnection() {
   }
   setStatus($('settingsStatus'), `Łączę się z: ${cfg.providerLabel}…`);
   try {
+    // Fixed, cheapest request: low effort, thinking parameter not sent.
     const { text } = await streamCompletion(
-      { ...cfg, effort: 'low' },
+      { ...cfg, effort: 'low', thinking: 'adaptive', showThinking: false },
       { system: 'Reply with exactly: OK', messages: [{ role: 'user', content: 'ping' }] },
     );
     setStatus($('settingsStatus'), `Połączenie działa (${modelLabel(cfg.model)} odpowiedział: „${text.trim().slice(0, 40)}”).`, 'ok');
@@ -958,8 +1433,22 @@ async function expandPost() {
 
 function bindEvents() {
   $('settingsToggle').addEventListener('click', () => showSettings($('settingsView').hidden));
+  $('historyToggle').addEventListener('click', () => showView($('historyView').hidden ? 'history' : 'main'));
+  $('historySearch').addEventListener('input', renderHistory);
+  $('historyKind').addEventListener('change', renderHistory);
   $('settingsView').addEventListener('submit', saveSettingsForm);
   $('testConnection').addEventListener('click', testConnection);
+  $('exportIncludeKeys').addEventListener('change', () => {
+    $('exportKeysWarning').hidden = !$('exportIncludeKeys').checked;
+  });
+  $('exportBackup').addEventListener('click', exportBackup);
+  $('importBackup').addEventListener('click', () => $('importFile').click());
+  $('importFile').addEventListener('change', readImportFile);
+  $('applyImport').addEventListener('click', applyImport);
+  $('cancelImport').addEventListener('click', () => {
+    hideImportPreview();
+    setStatus($('backupStatus'), 'Anulowano import. Nic się nie zmieniło.');
+  });
   $('learnNow').addEventListener('click', () => learnVoice({ statusEl: $('voiceStatus') }));
   $('clearHistory').addEventListener('click', clearHistory);
   $('toggleKey').addEventListener('click', () => {
@@ -972,9 +1461,17 @@ function bindEvents() {
     const custom = $('modelSelect').value === '__custom';
     $('modelCustom').hidden = !custom;
     if (custom) $('modelCustom').focus();
+    renderThinkingAvailability();
   });
+  $('modelCustom').addEventListener('input', renderThinkingAvailability);
+  $('effort').addEventListener('change', renderThinkingAvailability);
+  $('analysisEffort').addEventListener('change', renderThinkingAvailability);
 
   $('useSelection').addEventListener('click', useSelection);
+  $('translateSelection').addEventListener('click', () => translateSelection());
+  $('copyTranslation').addEventListener('click', copyTranslation);
+  $('closeTranslation').addEventListener('click', closeTranslation);
+  $('translateComments').addEventListener('click', translateComments);
   $('expandPost').addEventListener('click', expandPost);
   $('switchPost').addEventListener('click', () => {
     if (state.pendingPost) setPost(state.pendingPost);
@@ -1039,6 +1536,11 @@ async function init() {
   state.history = (await chrome.storage.local.get('history')).history ?? [];
   const { boundPost } = await chrome.storage.session.get('boundPost');
   setPost(boundPost ?? null);
+
+  // Alt+Shift+T: the request may already be waiting (panel opened by the command)
+  // or arrive while the panel is open.
+  chrome.storage.session.onChanged.addListener((changes) => handleTranslateRequest(changes.translateRequest?.newValue));
+  handleTranslateRequest((await chrome.storage.session.get('translateRequest')).translateRequest);
 
   chrome.storage.session.onChanged.addListener((changes) => {
     const next = changes.boundPost?.newValue;
