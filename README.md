@@ -101,6 +101,27 @@ Przycisk **Historia** w górnym pasku pokazuje komentarze i odpowiedzi, które w
 
 Historia powstaje tylko wtedy, gdy w ustawieniach jest włączone „Ucz się z komentarzy, które wstawiam lub kopiuję”. Wpis z rozmowy nie zawiera nic o rozmówcy.
 
+### Szkice, wersje i przerwanie pracy
+
+Własne polecenie, tekst odpowiedzi i pole „Popraw” zapisują się automatycznie. Ponowne otwarcie panelu odtwarza szkic dla tego samego posta, odpowiedzi na komentarz lub rozmowy. Błąd API i **Przerwij** zachowują ręczne zmiany oraz polecenie poprawki. Do 8 ostatnich wersji można przywrócić z listy albo przyciskiem **Cofnij poprawkę**.
+
+Domyślnie szkice są przechowywane tylko w bieżącej sesji przeglądarki (do 20, dodatkowo ograniczone budżetem miejsca). Wyłączenie, aktualizacja lub przeładowanie rozszerzenia oraz restart przeglądarki czyszczą dane sesyjne. W ustawieniach **Szkice** można osobno włączyć trwały zapis własnych tekstów, ważny do 7 dni. Wygasłe kopie są usuwane przy uruchomieniu lub użyciu rozszerzenia. Wyłączenie tej opcji usuwa trwałe kopie; bieżące szkice sesyjne zostają.
+
+Trwały szkic nie zawiera transkrypcji rozmówcy, postów źródłowych, kluczy API, historii zapytań, rozumowania ani obrazów. Nie jest częścią eksportu historii. Po restarcie wskaż ponownie właściwy post lub rozmowę. Po odzyskaniu szkicu poprawka zaczyna nowe zapytanie z aktualnym kontekstem; starej rozmowy z modelem nie utrwalamy. Obrazy trzeba dołączyć ponownie.
+
+Podczas zadania pasek **Przerwij** zatrzymuje także oczekiwanie na obrazy i dane Harmonic. **Ponów** uruchamia nieudane zadanie ponownie, jeśli jego tekst i kontekst są nadal aktualne. Przerwane zapytanie może być płatne, nawet gdy dostawca nie zwrócił zużycia tokenów.
+
+### Dokumenty, ankiety i własne obrazy
+
+W kroku 1 rozwiń **Dokument, ankieta lub własne obrazy**:
+
+- Przy rozpoznanej ankiecie odczytywane są pytanie i dostępne opcje, wraz z widocznymi wynikami. Nie są pobierane ukryte wyniki i nie jest oddawany głos.
+- Przy rozpoznanym dokumencie panel pokazuje tytuł, znaną liczbę stron i dostępne obrazy stron. Zaznacz, które uwzględnić. Model dostaje najwyżej 6 obrazów łącznie z ręcznymi załącznikami; ręcznie dodane obrazy mają pierwszeństwo.
+- Możesz dodać własne zrzuty stron lub slajdy jako PNG, JPG, WebP albo GIF (po 3,5 MB, łącznie do 12 MB). Działa to także bez tekstu posta. Załączniki trafiają do modelu dopiero przy analizie lub pisaniu.
+- Informacja o zakresie mówi, czy model dostał obrazy, sam opis, niepełną ankietę lub czy nie udało się pobrać części obrazów. Przy wideo otrzymuje opis i ewentualne obrazy, bez nagrania, dźwięku i napisów.
+
+Rozpoznawanie dokumentów i ankiet jest sprawdzone na atrapach DOM, a nie na bieżącej wersji LinkedIna. Jeśli układ strony nie pasuje, użyj ręcznych zrzutów albo przygotuj sondę opisaną niżej. Rozszerzenie nie pobiera PDF, nie przewija karuzeli i nie klika odtwarzania.
+
 ### Skróty klawiszowe
 
 | Skrót | Działanie |
@@ -129,6 +150,14 @@ Skróty zmienisz w `edge://extensions/shortcuts` (w Chrome: `chrome://extensions
 | Harmonic | Po wpisaniu klucza API Harmonic panel pokazuje etap, finansowanie, wielkość zespołu i inwestorów firmy autora (albo rozmówcy) oraz jego rolę. |
 
 Ton i długość komentarza wybierasz w panelu przy każdym komentarzu. Wtyczka zapamiętuje ostatni wybór. Mają pierwszeństwo przed Twoim stylem: przykłady Twoich komentarzy i wyuczone preferencje kształtują słownictwo i rytm, ale nie zmieniają wybranego tonu ani długości. Gdy zmienisz ton lub długość już po napisaniu komentarza, kliknij **Popraw** (pole może zostać puste), a model przepisze tekst według nowych ustawień.
+
+Pierwszeństwo tonu i długości obejmuje też wskazówki pisania wpisane w „O mnie”. Fakty z tego pola pozostają kontekstem, używanym tam, gdzie pasuje do posta lub rozmowy. Zapisana zmiana „O mnie” albo preferencji stylu działa od następnej poprawki; zapytanie już w toku korzysta z ustawień z chwili jego uruchomienia. Długość jest poleceniem dla modelu, a nie automatycznym przycinaniem wyniku.
+
+| Długość | Komentarz | Wiadomość |
+| --- | --- | --- |
+| Krótka | 1–2 zdania | 1–3 zdania |
+| Średnia | 3–4 zdania | Jeden krótki akapit |
+| Dłuższa | Jeden akapit, najwyżej 6 zdań | Dwa krótkie akapity |
 
 Przy OpenRouterze wtyczka wysyła effort i rozumowanie tak samo jak do Anthropic. Nie wiadomo, czy OpenRouter je przekazuje. Jeśli zwróci błąd 400, ustaw w obu grupach effort „Domyślna modelu” i rozumowanie „Automatyczne” oraz wyłącz „Pokaż tok rozumowania”. Komunikat błędu podpowiada, którą z tych zmian zrobić.
 
@@ -159,7 +188,7 @@ Po każdej wersji komentarza panel sprawdza go na dwa sposoby:
 - od razu, bez modelu: ogólniki („Great post!”, „Świetny post”), zwroty typowe dla AI, myślniki, hashtagi, emoji i komentarz złożony prawie wyłącznie ze słów posta;
 - modelem: czy komentarz coś wnosi, czy pasuje pod dowolny post, czy dopisuje fakty o Tobie spoza Twojego polecenia i „O mnie” oraz czy ma błędy językowe.
 
-Ostrzeżenie nie blokuje wstawienia. Po ręcznej zmianie tekstu kliknij **Sprawdź ponownie**.
+Ostrzeżenie nie blokuje wstawienia. Po ręcznej zmianie tekstu kliknij **Sprawdź ponownie**. Tłumaczenie zwrotne zostaje oznaczone jako nieaktualne: przycisk **Odśwież tłumaczenie** tłumaczy tylko aktualny tekst odpowiedzi, bez ponownego wysyłania rozmowy. Niepełny lub nieprawidłowy wynik API oznacza brak poprawnego sprawdzenia. Komunikat „Model nie wykrył problemów” dotyczy konkretnej wersji tekstu i nie jest gwarancją poprawności.
 
 ### Harmonic
 
@@ -178,7 +207,7 @@ Tłumaczenie zwrotne nie podlega polskim regułom. Ma wiernie oddawać angielski
 
 ### Koszt
 
-Według cennika Anthropic jeden komentarz razem z analizą posta i kontrolą jakości kosztuje ok. 2,7 centa na Sonnecie 5.5 i ok. 5,4 centa na Opusie 5.5 (szacunek bez grafiki i bez poprawek, przy effort „Niska”). Grafika, poprawki, nauka stylu, tłumaczenia i wyższy effort podnoszą koszt: przy wyższym effort model dłużej myśli, a myślenie jest liczone jak tekst odpowiedzi. Przy API Anthropic stała część promptu trafia do pamięci podręcznej (cache), więc w kolejnych zapytaniach w ciągu 5 minut kosztuje ok. 1/10 ceny. Panel pokazuje szacowany koszt bieżącego posta. OpenRouter może doliczać prowizję.
+Według cennika Anthropic jeden komentarz razem z analizą posta i kontrolą jakości kosztuje ok. 2,7 centa na Sonnecie 5.5 i ok. 5,4 centa na Opusie 5.5 (szacunek bez grafiki i bez poprawek, przy effort „Niska”). Grafika, poprawki, nauka stylu, tłumaczenia i wyższy effort podnoszą koszt: przy wyższym effort model dłużej myśli, a myślenie jest liczone jak tekst odpowiedzi. Przy API Anthropic stała część promptu trafia do pamięci podręcznej (cache), więc w kolejnych zapytaniach w ciągu 5 minut kosztuje ok. 1/10 ceny. Panel pokazuje szacowany koszt bieżącego posta. W **Koszt i czas poszczególnych zadań** znajdziesz użyty model, czas, tokeny wejściowe/wyjściowe i odczyt/zapis cache. Cena jest liczona według modelu faktycznie użytego w danym zapytaniu, także gdy poprawka zachowuje wcześniejszy model. Identyczna analiza może wrócić z pamięci panelu bez nowego wywołania API; „Przeanalizuj ponownie” wymusza świeże zapytanie. OpenRouter może doliczać prowizję.
 
 ## Prywatność i bezpieczeństwo
 
@@ -248,7 +277,8 @@ src/
   content/linkedin-dom.js odczyt posta ze strony LinkedIna
   content/linkedin-messaging.js odczyt rozmowy (wiadomości)
   sidepanel/              panel boczny
-  lib/                    prompty, reguły stylu, Twój styl (voice), kontrola jakości (quality),
+  lib/                    kontekst i rewizje (context), operacje (operations), szkice (drafts),
+                          media i załączniki (media), prompty, reguły stylu, Twój styl (voice), kontrola jakości (quality),
                           historia (history.js), kopia zapasowa (backup.js),
                           Harmonic, wywołania API, ustawienia, ceny
 test/unit/      testy jednostkowe (node:test)
@@ -272,7 +302,7 @@ Wynik zawiera tylko nazwy elementów i klas, techniczne identyfikatory elementó
 
 Pierwsza linia wyniku mówi, co sonda opisała: `mode: post` (kursor w polu komentarza, opis całego posta razem z obrazami, wideo i napisami jako samymi znacznikami, bez adresów) albo `mode: nearby` (np. pole wiadomości).
 
-**Posty z dokumentem, wideo i ankietą (do wersji 0.7.0):** wtyczka nie odczytuje jeszcze treści takich postów. Żeby to dodać, potrzebne są trzy wyniki sondy:
+**Posty z dokumentem, wideo i ankietą:** od 0.7.0 istnieje ostrożny odczyt rozpoznanych dokumentów i ankiet. Do potwierdzenia lub dostosowania go na prawdziwym LinkedInie nadal przydają się trzy wyniki sondy:
 
 1. Znajdź w feedzie post z dokumentem (karuzela ze stronami PDF), kliknij pole komentarza pod nim, uruchom sondę i zapisz wynik w `.cache\probe-dokument.txt`.
 2. To samo pod postem z wideo: `.cache\probe-wideo.txt`.
@@ -296,6 +326,14 @@ for f in *.deb; do dpkg -x "$f" ../root; done
 ```
 
 Zrzuty ekranu panelu do przeglądu: `LCA_SCREENSHOTS=/ścieżka/do/folderu npm run test:e2e`.
+
+### Ocena jakości modelu
+
+`npm run eval` opisuje zestaw 34 syntetycznych przypadków i niczego nie wysyła. Obejmuje komentarze, DM, konflikty długości i tonu z profilem i stylem, tłumaczenia oraz wykrywanie niepopartych faktów i zobowiązań. To osobny zestaw od testów E2E z gotowymi odpowiedziami API.
+
+- `npm run eval -- --from plik.json` sprawdza zapisane odpowiedzi `{id, text}`; plik może też być wcześniejszym raportem z polem `records`.
+- `npm run eval -- --run --limit 4` uruchamia **płatne** wywołania API. Klucz podaj w zmiennej środowiskowej `ANTHROPIC_API_KEY` lub `OPENROUTER_API_KEY`; skrypt nie czyta ustawień przeglądarki ani plików prywatnych. Dostawcę i model wybierają opcje `--provider` i `--model`.
+- Raport domyślnie trafia do `.cache/eval-results.json`. Kontrole mechaniczne sprawdzają format, wymagane nazwy/liczby, wybrane niepożądane obietnice, długość i rodzaj ostrzeżenia. Każdy przypadek ma rubrykę do ręcznej oceny sensu, wierności i stylu. Wynik mechaniczny nie zastępuje takiej oceny.
 
 ## Źródła i licencje
 

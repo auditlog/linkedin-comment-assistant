@@ -14,6 +14,7 @@
 // NOTE: when Harmonic changes or confirms its API, update the paths and summarize* here.
 
 export const HARMONIC_API = 'https://api.harmonic.ai';
+import { abortable, abortError } from './operations.js';
 const TIMEOUT_MS = 8000;
 
 export class HarmonicError extends Error {
@@ -30,44 +31,43 @@ export class HarmonicError extends Error {
  * @param {string} path - including the query string
  * @param {{apiKey: string, fetchFn?: typeof fetch}} options
  */
-async function call(method, path, { apiKey, fetchFn = fetch }) {
+async function call(method, path, { apiKey, fetchFn = fetch, signal }) {
+  if (signal?.aborted) throw abortError();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  let response;
+  const cancel = () => controller.abort();
+  signal?.addEventListener('abort', cancel, { once: true });
+  const timer = setTimeout(cancel, TIMEOUT_MS);
   try {
-    response = await fetchFn(`${HARMONIC_API}${path}`, {
-      method,
-      headers: { apikey: apiKey, accept: 'application/json' },
-      signal: controller.signal,
-    });
+    const response = await abortable(fetchFn(`${HARMONIC_API}${path}`, {
+      method, headers: { apikey: apiKey, accept: 'application/json' }, signal: controller.signal,
+    }), controller.signal);
+    if (response.status === 404) return null;
+    if (response.status === 401 || response.status === 403) {
+      throw new HarmonicError(`Harmonic odrzucił klucz API (${response.status}). Sprawdź klucz w ustawieniach i czy Twój plan Harmonic obejmuje dostęp do API.`, response.status);
+    }
+    if (response.status === 429) throw new HarmonicError('Harmonic: za dużo zapytań (429). Spróbuj za chwilę.', 429);
+    if (!response.ok) {
+      let detail = '';
+      try {
+        const body = await abortable(response.json(), controller.signal);
+        detail = body?.detail?.[0]?.msg || body?.detail || body?.message || '';
+      } catch (error) {
+        if (controller.signal.aborted) throw error;
+      }
+      throw new HarmonicError(`Harmonic zwrócił błąd ${response.status}${detail ? `: ${detail}` : ''}.`, response.status);
+    }
+    // Keep cancellation and the timeout active through the body, not just headers.
+    const text = await abortable(response.text(), controller.signal);
+    return !text || text === 'null' ? null : JSON.parse(text);
   } catch (error) {
-    throw new HarmonicError(
-      error?.name === 'AbortError' ? 'Harmonic nie odpowiedział w ciągu 8 sekund.' : 'Brak połączenia z Harmonic.',
-    );
+    if (signal?.aborted) throw abortError();
+    if (error instanceof HarmonicError) throw error;
+    throw new HarmonicError(controller.signal.aborted ? 'Harmonic nie odpowiedział w ciągu 8 sekund.'
+      : error instanceof SyntaxError ? 'Harmonic zwrócił niepoprawną odpowiedź. Spróbuj ponownie.' : 'Brak połączenia z Harmonic.');
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', cancel);
   }
-  if (response.status === 404) return null;
-  if (response.status === 401 || response.status === 403) {
-    throw new HarmonicError(
-      `Harmonic odrzucił klucz API (${response.status}). Sprawdź klucz w ustawieniach i czy Twój plan Harmonic obejmuje dostęp do API.`,
-      response.status,
-    );
-  }
-  if (response.status === 429) throw new HarmonicError('Harmonic: za dużo zapytań (429). Spróbuj za chwilę.', 429);
-  if (!response.ok) {
-    let detail = '';
-    try {
-      const body = await response.json();
-      detail = body?.detail?.[0]?.msg || body?.detail || body?.message || '';
-    } catch {
-      /* body is not JSON */
-    }
-    throw new HarmonicError(`Harmonic zwrócił błąd ${response.status}${detail ? `: ${detail}` : ''}.`, response.status);
-  }
-  const text = await response.text();
-  if (!text || text === 'null') return null;
-  return JSON.parse(text);
 }
 
 const pick = (obj, ...keys) => {
@@ -166,18 +166,18 @@ export function formatBackground({ company = null, person = null } = {}) {
  * @param {{profile: {url: string, type: 'person'|'company'}|null, apiKey: string, fetchFn?: typeof fetch}} args
  * @returns {Promise<{company: object|null, person: object|null}>}
  */
-export async function fetchHarmonicContext({ profile, apiKey, fetchFn = fetch }) {
+export async function fetchHarmonicContext({ profile, apiKey, fetchFn = fetch, signal }) {
   if (!profile?.url || !apiKey) return { company: null, person: null };
   const query = (url) => encodeURIComponent(url);
   if (profile.type === 'company') {
-    const raw = await call('POST', `/companies?linkedin_url=${query(profile.url)}&enrich_missing_company=false`, { apiKey, fetchFn });
+    const raw = await call('POST', `/companies?linkedin_url=${query(profile.url)}&enrich_missing_company=false`, { apiKey, fetchFn, signal });
     return { company: summarizeCompany(raw), person: null };
   }
-  const person = summarizePerson(await call('POST', `/persons?linkedin_url=${query(profile.url)}`, { apiKey, fetchFn }));
+  const person = summarizePerson(await call('POST', `/persons?linkedin_url=${query(profile.url)}`, { apiKey, fetchFn, signal }));
   let company = null;
   if (person?.companyUrn) {
     try {
-      company = summarizeCompany(await call('GET', `/companies/${encodeURIComponent(person.companyUrn)}`, { apiKey, fetchFn }));
+      company = summarizeCompany(await call('GET', `/companies/${encodeURIComponent(person.companyUrn)}`, { apiKey, fetchFn, signal }));
     } catch {
       // The person is still useful without their company.
       company = null;

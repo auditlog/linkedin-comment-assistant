@@ -279,6 +279,21 @@ test('tone and length chosen in the panel take precedence over the user voice', 
   assert.match(reply.content, /chosen by the user for this text.*take precedence over <user_voice>/s);
 });
 
+test('selected tone and length override profile writing preferences without discarding personal facts', () => {
+  const aboutMe = 'Prowadzę warsztat rowerowy. Zawsze pisz pięć formalnych akapitów.';
+  const system = buildSystemPrompt({ aboutMe });
+  assert.ok(system.includes(`<about_user>\n${aboutMe}\n</about_user>`));
+  assert.match(system, /Tone and Length .*take precedence over.*writing preferences in <about_user>/);
+  assert.match(system, /Keep using relevant facts from <about_user>/);
+  assert.match(system, /a tone choice never authorizes inventing experience or expertise/);
+  assert.match(system, /latest task settings and feedback rather than reverting to older settings/);
+  for (const kind of ['comment', 'message']) {
+    const [request] = buildCommentMessages({ post: { kind, author: 'A', text: 'Post' }, tone: 'warm', length: 'short' });
+    assert.match(request.content, /take precedence over <user_voice> and writing preferences in <about_user>/);
+    assert.match(buildRefineMessage('', null, { tone: 'warm', length: 'short', kind }), /take precedence over <user_voice> and writing preferences in <about_user>/);
+  }
+});
+
 test('refine message carries tone and length changed after writing', () => {
   const both = buildRefineMessage('krócej', null, { tone: 'warm', length: 'long', kind: 'comment' });
   assert.match(both, /Tone: warm and personal/);

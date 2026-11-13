@@ -7,9 +7,23 @@
 // The check only warns; inserting stays the user's decision.
 
 import { escapeForTag, buildPostBlock, buildConversationBlock } from './prompts.js';
+import { parseTagged } from './tagged.js';
 
 export const CHECK_TAGS = ['verdict', 'issues'];
 export const ISSUE_TYPES = ['restates_post', 'generic', 'ai_pattern', 'unsupported_claim', 'language', 'off_target', 'commitment'];
+
+export function parseCheckResult(text, stopReason = 'end_turn') {
+  const parsed = parseTagged(text, CHECK_TAGS);
+  const verdict = (parsed.verdict || '').trim().toLowerCase();
+  const issues = parseIssues(parsed.issues);
+  const closed = /<verdict>\s*(ok|warn)\s*<\/verdict>/i.test(text) && /<issues>[\s\S]*<\/issues>/.test(text);
+  const issueMarkup = (parsed.issues || '').trim();
+  const malformed = issueMarkup && (!issues.length || (issueMarkup.match(/<issue\b/g) || []).length !== issues.length);
+  if (stopReason !== 'end_turn' || !closed || !['ok', 'warn'].includes(verdict) || malformed || (verdict === 'ok' && issues.length) || (verdict === 'warn' && !issues.length)) {
+    throw new Error('Model zwrócił niepełny lub nieprawidłowy wynik kontroli. Kliknij „Sprawdź ponownie”.');
+  }
+  return { status: verdict === 'warn' || issues.length ? 'warn' : 'ok', issues };
+}
 
 // Phrases that make a comment portable to any post or read as AI-written.
 // Word boundaries are Unicode-aware on purpose: JavaScript's \b and \w only know ASCII,

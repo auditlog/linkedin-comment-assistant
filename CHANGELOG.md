@@ -1,5 +1,21 @@
 # Historia zmian
 
+## 0.8.0 (2026-11-13)
+
+- Zapisane zmiany „O mnie” i preferencji stylu obowiązują od kolejnej poprawki tekstu. W 0.7.0 poprawki zachowywały stary profil i styl z chwili pierwszego napisania. Ustawienia modelu, effort i rozumowania nadal pozostają stałe w ramach rozmowy.
+- Wybrany ton i długość mają jawne pierwszeństwo także przed wskazówkami pisania wpisanymi w „O mnie”. Fakty z profilu nadal są kontekstem; ton ekspercki nie pozwala dopisywać doświadczeń.
+- Osiem testów E2E sprawdza przekazywanie profilu i stylu razem z trzema długościami komentarzy i wiadomości, zmianę ustawień przed poprawką oraz odzyskany szkic. To testy na atrapach API, bez oceny odpowiedzi rzeczywistego modelu. Zestaw do oceny modelu rozszerzono do 34 syntetycznych przypadków.
+
+## 0.7.0 (2026-11-13)
+
+- Kontekst rozróżnia post i konkretną odpowiedź na komentarz. Ponowny fokus odświeża zmienioną rozmowę; praca w toku wymaga jawnego przełączenia. Panel pomija zdarzenia z innego okna. Przed wstawieniem sprawdza ponownie cel i źródło, również po przerenderowaniu lub ponownym wykorzystaniu edytora przez stronę.
+- Zapytania mają własnego właściciela i niezmienne dane wejściowe. Przełączenie kontekstu przerywa poprzednie zadania i nie dopuszcza spóźnionych aktualizacji ani mieszania tekstu i grafik. Tłumaczenie zaznaczenia nadal działa niezależnie od posta.
+- Automatyczny zapis własnych szkiców, odtwarzanie po ponownym utworzeniu panelu, ostatnie 8 wersji i „Cofnij poprawkę”. Błąd lub przerwanie poprawki zachowuje ręczne zmiany i polecenie. Domyślnie dane sesyjne; opcjonalny trwały zapis do 7 dni, bez transkrypcji rozmówcy, zapytań do API, kluczy i obrazów. Wygasłe szkice są sprzątane przy uruchomieniu/użyciu.
+- Kontrola jakości sprawdza kompletność i spójność formatu odpowiedzi. Brak poprawnego wyniku nie daje zielonego komunikatu. Ręczna zmiana oznacza tłumaczenie zwrotne jako nieaktualne; „Odśwież tłumaczenie” tłumaczy tylko bieżący tekst odpowiedzi.
+- „Przerwij” i „Ponów”, limit 8 sekund na pobranie obrazu, obsługa przerwania także podczas przygotowania danych i nauki stylu. Szczegóły kosztu pokazują rzeczywiście użyty model, tokeny/cache i czas zadania. Identyczna analiza może zostać przywrócona w panelu bez nowego wywołania API.
+- Ostrożne rozpoznawanie ankiet oraz dokumentów/karuzel, wybór dostępnych obrazów stron, ręczne załączniki i jawny zakres odczytu (do 6 obrazów). Bez pobierania PDF, przewijania slajdów i odtwarzania wideo. Selektory sprawdzono na atrapach; bieżący DOM LinkedIna wymaga potwierdzenia sondami.
+- Zestaw 32 syntetycznych przypadków do oceny modelu (`npm run eval`), z kontrolami mechanicznymi i rubrykami oceny ręcznej. Rzeczywiste wywołania API tylko po podaniu `--run`.
+
 ## 0.6.0 (2026-11-10)
 
 - Ton i Długość wybrane w panelu mają pierwszeństwo przed Twoim stylem. Wcześniej prompt kazał modelowi naśladować ton i długość Twoich dawnych komentarzy i wyuczonych preferencji, więc wybór np. „Dłuższy” albo „Ciepły” mógł zostać pominięty. Przykłady i preferencje nadal kształtują słownictwo i rytm.

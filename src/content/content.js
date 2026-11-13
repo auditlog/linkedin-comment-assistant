@@ -13,8 +13,9 @@
 // from walking shadowRoot.activeElement.
 // See also: src/background.js (stores the bound post), src/sidepanel/sidepanel.js.
 
-import { isCommentEditor, editorRoot, extractPost, insertIntoEditor, findPostContainer } from './linkedin-dom.js';
+import { isCommentEditor, editorRoot, extractPost, insertIntoEditor, findPostContainer, extractReplyTarget } from './linkedin-dom.js';
 import { isMessageEditor, extractConversation, findConversation, extractCounterpart, conversationKey } from './linkedin-messaging.js';
+import { targetIdentity, sourceRevision } from '../lib/context.js';
 
 // Wait a moment after focus, so tabbing or clicking through several boxes binds only the last one.
 const FOCUS_SETTLE_MS = 350;
@@ -102,7 +103,9 @@ document.addEventListener(
     focusTimer = setTimeout(async () => {
       if (!editor.isConnected || !editor.contains(deepActiveElement())) return;
       try {
-        await chrome.runtime.sendMessage({ type: 'lca:bind', post: await reportPost(editor) });
+        const post = await reportPost(editor);
+        if (!editor.isConnected || !editor.contains(deepActiveElement())) return;
+        await chrome.runtime.sendMessage({ type: 'lca:bind', post });
       } catch (error) {
         // Typical cause: the extension was reloaded and this tab still runs the old script.
         console.debug('[LCA] bind failed (reload the LinkedIn tab after updating the extension)', error);
@@ -114,17 +117,21 @@ document.addEventListener(
 
 // --- requests from the side panel ------------------------------------------
 
-function findEditorForPost(postKey) {
+function findEditorForPost(postKey, expectedTarget) {
   // Fallback when the original editor was re-rendered: any comment editor inside the same post.
-  for (const el of document.querySelectorAll('[contenteditable="true"]')) {
+  const candidates = new Set();
+  for (const el of deepQueryAll('[contenteditable="true"]')) {
     if (!isCommentEditor(el)) continue;
     const container = findPostContainer(el);
     if (!container) continue;
     const urnHolder = container.closest('[data-urn], [data-id]') || container;
     const urn = urnHolder.getAttribute('data-urn') || urnHolder.getAttribute('data-id') || '';
-    if (urn && urn === postKey) return editorRoot(el);
+    if (urn && urn === postKey) {
+      const replyTo = extractReplyTarget(editorRoot(el), container);
+      if (!expectedTarget || targetIdentity({ key: postKey, replyTo }) === expectedTarget) candidates.add(editorRoot(el));
+    }
   }
-  return null;
+  return candidates.size === 1 ? [...candidates][0] : null;
 }
 
 function findEditorForConversation(key) {
@@ -140,29 +147,35 @@ function findEditorForConversation(key) {
 function resolveEditor(message) {
   const editor = editors.get(message.editorToken)?.deref();
   if (editor && editor.isConnected) return editor;
-  return message.postKey?.startsWith('msg:') ? findEditorForConversation(message.postKey) : findEditorForPost(message.postKey);
+  return message.postKey?.startsWith('msg:') ? findEditorForConversation(message.postKey) : findEditorForPost(message.postKey, message.expectedTarget);
+}
+
+async function verifyEditor(message, { checkSource = true } = {}) {
+  const editor = resolveEditor(message);
+  if (!editor) return { ok: false, reason: 'editor-missing' };
+  const post = await reportPost(editor);
+  if (!editor.isConnected || (message.expectedTarget && targetIdentity(post) !== message.expectedTarget)
+    || (checkSource && message.expectedRevision && sourceRevision(post) !== message.expectedRevision)) {
+    return { ok: false, reason: 'context-changed' };
+  }
+  return { ok: true, editor };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'lca:insert') {
-    const editor = resolveEditor(message);
-    if (!editor) {
-      sendResponse({ ok: false, reason: 'editor-missing' });
-      return false;
-    }
-    // Message boxes: soft line breaks only, so nothing can trigger LinkedIn's Enter-to-send.
-    const ok = insertIntoEditor(editor, message.text, { lineBreaks: isMessageEditor(editor) ? 'soft' : 'paragraph' });
-    sendResponse({ ok, reason: ok ? null : 'insert-failed' });
-    return false;
+    verifyEditor(message).then((result) => {
+      if (!result.ok) return sendResponse(result);
+      const { editor } = result;
+      // Message boxes: never generate Enter-to-send or submit events.
+      const ok = insertIntoEditor(editor, message.text, { lineBreaks: isMessageEditor(editor) ? 'soft' : 'paragraph' });
+      sendResponse({ ok, reason: ok ? null : 'insert-failed' });
+    }).catch(() => sendResponse({ ok: false, reason: 'context-changed' }));
+    return true;
   }
   if (message?.type === 'lca:expand') {
     // Explicit user action in the panel: click "…more" in this post and read it again.
-    const editor = resolveEditor(message);
-    if (!editor) {
-      sendResponse({ ok: false, reason: 'editor-missing' });
-      return false;
-    }
-    reportPost(editor, { expand: true })
+    verifyEditor(message, { checkSource: false })
+      .then((result) => result.ok ? reportPost(result.editor, { expand: true }) : Promise.reject(new Error(result.reason)))
       .then((post) => sendResponse({ ok: true, post }))
       .catch((error) => sendResponse({ ok: false, reason: String(error) }));
     return true; // async response

@@ -58,6 +58,26 @@ body {
 .topbar { gap: 6px; }
 .topbar h1 { margin: 0 auto 0 0; font-size: 14px; font-weight: 600; }
 
+.operation-bar { position: sticky; top: var(--topbar-height, 50px); z-index: 1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 16px; background: var(--accent-soft); color: var(--ink); border-bottom: 1px solid var(--line); font-size: 13px; }
+.operation-bar span { flex: 1 1 180px; }
+.media-details { margin-top: 12px; }
+.media-details summary { color: var(--accent); }
+.media-details p { white-space: pre-line; }
+.media-details input[type="file"] { width: 100%; font: inherit; font-size: 13px; }
+.attachment-list { list-style: none; padding: 0; margin: 8px 0; }
+.attachment-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 0; font-size: 13px; }
+.attachment-list span { overflow-wrap: anywhere; }
+.version-controls { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.version-controls select { flex: 1 1 180px; width: 0; min-width: 0; }
+.version-controls label { margin-top: 8px; }
+fieldset.drafts { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+#costList { padding-left: 18px; font-size: 12px; font-variant-numeric: tabular-nums; }
+#costList li { margin-bottom: 6px; overflow-wrap: anywhere; }
+#costLine { overflow-wrap: anywhere; }
+::placeholder { color: var(--muted); opacity: 1; }
+::selection { background: var(--accent-soft); color: var(--ink); }
+textarea, input { caret-color: var(--accent); }
+
 main, .settings { padding: 8px 16px 24px; }
 
 a { color: var(--accent); }

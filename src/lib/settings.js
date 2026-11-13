@@ -83,6 +83,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   commentLanguage: 'auto',
   autoAnalyze: true,
   includeImages: true,
+  // Own drafts only, seven-day retention. DM transcripts never go here.
+  persistDrafts: false,
   tone: 'factual',
   length: 'short',
   localDefaultsApplied: false,
@@ -170,6 +172,7 @@ export function mergeSettings(stored) {
   if (!THINKING_MODES[merged.thinking]) merged.thinking = DEFAULT_SETTINGS.thinking;
   if (!THINKING_MODES[merged.analysisThinking]) merged.analysisThinking = DEFAULT_SETTINGS.analysisThinking;
   merged.showThinking = merged.showThinking === true;
+  merged.persistDrafts = merged.persistDrafts === true;
   return merged;
 }
 

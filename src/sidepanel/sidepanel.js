@@ -24,6 +24,7 @@ import {
   buildRefineMessage,
   buildTranslateMessages,
   buildTranslateCommentsMessages,
+  buildBackTranslationMessages,
   ANALYSIS_TAGS,
   COMMENT_TAGS,
   TRANSLATE_TAGS,
@@ -50,7 +51,7 @@ import {
   VOICE_TAGS,
   VOICE_FIELDS,
 } from '../lib/voice.js';
-import { heuristicIssues, buildCheckMessages, parseIssues, buildSpecificFeedback, CHECK_TAGS } from '../lib/quality.js';
+import { heuristicIssues, buildCheckMessages, parseCheckResult, buildSpecificFeedback } from '../lib/quality.js';
 import { fetchHarmonicContext, formatBackground, formatMoney } from '../lib/harmonic.js';
 import { filterHistory, postUrl, removeEntry } from '../lib/history.js';
 import {
@@ -65,20 +66,26 @@ import {
   backupHasKeys,
 } from '../lib/backup.js';
 
+import { targetIdentity, sourceRevision, draftKey, fingerprint, sameTarget } from '../lib/context.js';
+import { Operations, abortable, abortError } from '../lib/operations.js';
+import { pushVersion, sanitizeDraft } from '../lib/drafts.js';
+import { readAttachment, mediaCoverage, MAX_MEDIA_IMAGES, MAX_ATTACHMENTS_BYTES } from '../lib/media.js';
+
 const $ = (id) => document.getElementById(id);
 
 const state = {
   settings: mergeSettings({}),
+  windowId: null, epoch: 0, sourceRevision: '', draftLoading: false, draftDirty: false,
+  versions: [], versionCursor: -1, translationFor: '', attachments: [], selectedPages: new Set(),
+  imageCache: new Map(), lastCoverage: '', costs: [], retry: null,
   post: null, // {key, author, text, replyTo, imageUrls, hasSeeMore, tabId, editorToken, manual}
   pendingPost: null, // a post focused on the page while the user had work in progress
   postLanguage: null, // ISO code from the analysis (<post_language>), used to pick style examples
   history: [], // comments the user inserted/copied (src/lib/voice.js), newest first
-  learning: false,
   check: { status: 'idle', issues: [], checkedText: '', error: '' }, // model quality check of the comment
   harmonic: { status: 'off', company: null, person: null, error: '' }, // optional company/person data
   harmonicPromise: null,
   includeImages: true,
-  imageBlocksPromise: null,
   analysisRaw: '',
   conversation: [], // Claude messages of the comment thread for the current post
   // Config of the "Pisanie i poprawki" group, frozen by writeComment for the whole thread:
@@ -91,15 +98,18 @@ const state = {
   lastResultThinking: '',
   lastGeneratedComment: '',
   lastResultRaw: '', // raw text of the last successful comment reply (re-rendered after a failed refine)
-  postCostUsd: 0,
-  controllers: { analysis: null, comment: null, check: null, translateComments: null },
+
   commentTranslations: [], // Polish translations of post.existingComments, same order
-  // Translation of a selection: deliberately outside `controllers`, so switching posts
-  // (setPost -> abortAll) neither stops it nor clears its card.
-  translateController: null,
+  // Selection translation uses a separate operation scope and survives post switches.
+
   translateRaw: '',
   lastTranslateAt: 0,
 };
+
+const ops = new Operations((event) => {
+  if (event?.type === 'start') state.retry = null;
+  renderOperations();
+});
 
 // --- small UI helpers -------------------------------------------------------
 
@@ -155,23 +165,173 @@ function ensureConfigOrExplain(statusEl) {
   return true;
 }
 
-function addCost(message) {
-  const usd = estimateCostUsd(config().model, message?.usage);
-  if (usd != null) state.postCostUsd += usd;
-  const label = modelLabel(config().model);
-  $('costLine').textContent =
-    usd == null
-      ? `Model: ${label}.`
-      : `Model: ${label}. Koszt dla ${KIND_LABELS[postKind()].costScope}: ${formatCost(state.postCostUsd)} (szacunek).`;
+function costScope(post = state.post) {
+  return targetIdentity(post) || 'other';
+}
+
+function addCost(message, cfg, task, scope = costScope()) {
+  const model = message?.model || cfg.model;
+  state.costs.push({ scope, label: task.label, model,
+    usd: estimateCostUsd(model, message?.usage), usage: message?.usage || {},
+    ms: Date.now() - task.startedAt });
+  state.costs = state.costs.slice(-100);
+  renderCosts();
+}
+
+function renderCosts() {
+  const items = state.costs.filter((item) => item.scope === costScope());
+  const total = items.reduce((sum, item) => sum + (item.usd || 0), 0);
+  const models = [...new Set(items.map((item) => modelLabel(item.model)))].join(', ');
+  $('costLine').textContent = items.length
+    ? `Model: ${models}. Koszt dla ${KIND_LABELS[postKind()].costScope}: ${formatCost(total)} (szacunek${items.some((item) => item.usd == null) ? ', część kosztu nieznana' : ''}).` : '';
+  $('costDetails').hidden = items.length === 0;
+  $('costList').replaceChildren(...items.map((item) => {
+    const li = document.createElement('li');
+    const u = item.usage;
+    li.textContent = `${item.label}: ${modelLabel(item.model)}, ${formatCost(item.usd) || 'koszt nieznany'}, ${(item.ms / 1000).toFixed(1).replace('.', ',')} s. Tokeny: wejście ${u.input_tokens || 0}, wyjście ${u.output_tokens || 0}, cache odczyt ${u.cache_read_input_tokens || 0}, zapis ${u.cache_creation_input_tokens || 0}.`;
+    return li;
+  }));
+}
+
+function renderOperations() {
+  const active = ops.active();
+  $('operationBar').hidden = !active.length && !state.retry;
+  $('stopOperation').hidden = !active.length;
+  $('retryOperation').hidden = active.length > 0 || !state.retry;
+  $('operationStatus').textContent = active.length ? active.map((task) => task.label).join(' · ') : state.retry ? 'Możesz ponowić ostatnie zadanie.' : '';
+  const writing = ops.has('comment');
+  $('writeComment').disabled = writing || state.draftLoading;
+  $('refineForm').querySelector('button').disabled = writing;
+  $('makeSpecific').disabled = writing;
+  const currentIndex = state.versions.findIndex((version) => version.comment === $('commentText').value);
+  $('undoRevision').disabled = writing || !state.versions.length || currentIndex === 0;
+  $('restoreVersion').disabled = writing;
+  $('commentText').readOnly = writing;
+  const noText = !$('commentText').value.trim();
+  $('insertComment').disabled = writing || noText || state.post?.manual || state.post?.tabId == null;
+  $('copyComment').disabled = writing || noText;
+  $('refreshBackTranslation').disabled = writing || ops.has('backTranslation');
+}
+
+function offerRetry(callback, { text = null, epoch = state.epoch, independent = false, taskName = null } = {}) {
+  state.retry = { callback, taskName, valid: () => (independent || state.epoch === epoch) && (text == null || $('commentText').value.trim() === text) };
+  renderOperations();
+}
+
+function taskError(error, cfg, task, statusEl, retry, guard = {}) {
+  if (!task.owns()) return;
+  const message = describeError(error, cfg);
+  setStatus(statusEl, message || 'Przerwano. Dotychczasowy tekst został zachowany.', message ? 'error' : '');
+  if (retry) offerRetry(retry, { ...guard, taskName: task.name });
+}
+
+function currentVersion() {
+  return {
+    at: Date.now(), comment: $('commentText').value, translation: $('backTranslation').textContent,
+    translationFor: state.translationFor, generated: state.lastGeneratedComment,
+    tone: state.writtenWith?.tone || $('tone').value, length: state.writtenWith?.length || $('length').value,
+    notes: [...$('notes').children].map((node) => node.textContent), thinking: state.resultThinking,
+  };
+}
+
+function restoreVersion(version) {
+  $('commentText').value = version.comment || '';
+  $('backTranslation').textContent = version.translation || '';
+  state.translationFor = version.translationFor || '';
+  state.lastGeneratedComment = version.generated || '';
+  state.resultThinking = version.thinking || '';
+  $('resultReasoningText').textContent = state.resultThinking;
+  $('resultReasoning').hidden = !state.resultThinking;
+  $('notes').replaceChildren(...(version.notes || []).map((text) => {
+    const li = document.createElement('li'); li.textContent = text; return li;
+  }));
+  state.writtenWith = { tone: version.tone || $('tone').value, length: version.length || $('length').value };
+  state.versionCursor = state.versions.findIndex((item) => item.comment === version.comment);
+  $('resultSection').hidden = !version.comment;
+  renderEditState();
+  renderQuality();
+  renderOperations();
+}
+
+function renderEditState() {
+  const current = $('commentText').value.trim();
+  const stale = Boolean(current) && current !== state.translationFor.trim();
+  $('backTranslationStatus').hidden = !stale;
+  $('refreshBackTranslation').hidden = !stale;
+  $('notesWrap').hidden = current !== state.lastGeneratedComment.trim() || !$('notes').children.length;
+  renderRefineHint();
+}
+
+function renderVersions() {
+  $('versionControls').hidden = state.versions.length === 0;
+  fillSelect($('versionSelect'), Object.fromEntries(state.versions.map((item, i) => [String(i),
+    `${i + 1}. ${item.comment.slice(0, 55)}${item.comment.length > 55 ? '…' : ''}`])), String(state.versionCursor >= 0 ? state.versionCursor : Math.max(0, state.versions.length - 1)));
+  renderOperations();
+}
+
+function selectVersion(index) {
+  const chosen = state.versions[index];
+  if (!chosen || ops.has('comment')) return;
+  if (!state.versions.some((item) => item.comment === $('commentText').value)) state.versions = pushVersion(state.versions, currentVersion());
+  ops.cancel('check'); ops.cancel('backTranslation');
+  state.conversation = []; state.writeConfig = null;
+  state.check = { status: 'idle', issues: [], checkedText: '', error: '' };
+  restoreVersion(chosen); renderVersions(); persistDraft();
+}
+
+function persistDraft() {
+  if (!state.post || state.draftLoading) return;
+  const version = currentVersion();
+  if (!version.comment.trim() && !$('instruction').value.trim() && !$('refineInput').value.trim()) return;
+  if ([version.comment, version.translation, version.generated].some((text) => text.length > 20000)
+    || $('instruction').value.length > 10000 || $('refineInput').value.length > 5000) {
+    setStatus($('draftStatus'), 'Szkic jest za długi do automatycznego zapisu. Skopiuj tekst przed zamknięciem panelu.', 'warn');
+    return;
+  }
+  const epoch = state.epoch;
+  const draft = { ...version, at: Date.now(), instruction: $('instruction').value, feedback: $('refineInput').value,
+    sourceRevision: state.sourceRevision, hadAttachments: state.attachments.length > 0, versions: state.versions };
+  chrome.runtime.sendMessage({ type: 'lca:draft:save', key: draftKey(state.post), draft, persistent: state.settings.persistDrafts })
+    .then((result) => {
+      if (epoch === state.epoch && !result?.ok) setStatus($('draftStatus'), 'Nie udało się zapisać szkicu. Skopiuj tekst przed zamknięciem panelu.', 'error');
+    }).catch(() => {
+      if (epoch === state.epoch) setStatus($('draftStatus'), 'Nie udało się zapisać szkicu. Skopiuj tekst przed zamknięciem panelu.', 'error');
+    });
+}
+
+function ownTextChanged() {
+  state.draftDirty = true;
+  state.versionCursor = state.versions.findIndex((item) => item.comment === $('commentText').value);
+  ops.cancel('check');
+  ops.cancel('backTranslation');
+  renderEditState(); renderQuality(); renderVersions(); persistDraft();
+}
+
+async function restoreDraftForPost(post, epoch) {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'lca:draft:load', key: draftKey(post) });
+    if (epoch !== state.epoch || state.draftDirty) return;
+    const draft = sanitizeDraft(response?.draft);
+    if (!draft) return;
+    $('instruction').value = draft.instruction;
+    $('refineInput').value = draft.feedback;
+    state.versions = draft.versions;
+    restoreVersion(draft);
+    const sourceChanged = draft.sourceRevision !== state.sourceRevision;
+    setStatus($('draftStatus'), `Przywrócono Twój szkic.${sourceChanged ? ' Kontekst się zmienił: sprawdź tekst przed wstawieniem.' : ''}${draft.hadAttachments ? ' Dołącz obrazy ponownie, jeśli są nadal potrzebne.' : ''}`);
+    renderVersions();
+  } catch {
+    if (epoch === state.epoch) setStatus($('draftStatus'), 'Nie udało się odczytać zapisanych szkiców.', 'error');
+  } finally {
+    if (epoch === state.epoch) { state.draftLoading = false; renderOperations(); }
+  }
 }
 
 // --- post -------------------------------------------------------------------
 
 function abortAll() {
-  for (const key of Object.keys(state.controllers)) {
-    state.controllers[key]?.abort();
-    state.controllers[key] = null;
-  }
+  ops.cancelAll({ scope: 'post', discard: true });
+  for (const key of ['analysis', 'result', 'comments', 'backTranslation']) cancelRender(key);
 }
 
 // Follow mode binds a post on every comment-box focus; wait a moment before the automatic
@@ -181,7 +341,7 @@ let autoAnalysisTimer = null;
 
 /** True when switching posts would throw away something the user typed or received. */
 function hasWork() {
-  return Boolean($('instruction').value.trim() || $('commentText').value.trim() || state.conversation.length);
+  return Boolean($('instruction').value.trim() || $('commentText').value.trim() || state.conversation.length || ops.has('comment') || state.attachments.length);
 }
 
 function showPendingPost(post) {
@@ -198,16 +358,20 @@ function showPendingPost(post) {
 }
 
 function setPost(post) {
+  persistDraft();
   abortAll();
   clearTimeout(autoAnalysisTimer);
   showPendingPost(null);
+  const epoch = ++state.epoch;
   state.post = post;
+  state.sourceRevision = sourceRevision(post);
+  state.retry = null;
   state.analysisRaw = '';
   state.commentTranslations = [];
   state.conversation = [];
   state.writeConfig = null;
+  state.writtenInstruction = '';
   state.writtenWith = null;
-  $('refineHint').hidden = true;
   state.lastGeneratedComment = '';
   state.lastResultRaw = '';
   state.analysisThinking = '';
@@ -215,24 +379,40 @@ function setPost(post) {
   state.lastResultThinking = '';
   state.postLanguage = null;
   state.check = { status: 'idle', issues: [], checkedText: '', error: '' };
-  state.postCostUsd = 0;
   state.includeImages = state.settings.includeImages;
-  state.imageBlocksPromise = null;
-  $('costLine').textContent = '';
-  setStatus($('translateCommentsStatus'), '');
-  $('instruction').value = '';
-  $('commentText').value = '';
-  setStatus($('insertStatus'), '');
+  state.imageCache = new Map();
+  state.attachments = [];
+  state.lastCoverage = '';
+  state.selectedPages = new Set((post?.media?.pages || []).map((page) => page.url));
+  state.versions = [];
+  state.versionCursor = -1;
+  state.translationFor = '';
+  state.draftDirty = false;
+  state.draftLoading = Boolean(post);
+  for (const id of ['instruction', 'commentText', 'refineInput']) $(id).value = '';
+  for (const id of ['translateCommentsStatus', 'insertStatus', 'draftStatus', 'analysisStatus', 'attachmentStatus']) setStatus($(id), '');
+  $('backTranslation').textContent = '';
+  $('backTranslationStatus').hidden = true;
+  $('refreshBackTranslation').hidden = true;
+  $('refineHint').hidden = true;
   startHarmonic(post);
-  renderPost();
-  renderAnalysis();
+  renderPost(); renderAnalysis(); renderMedia(); renderVersions(); renderCosts();
   $('resultSection').hidden = true;
   state.autoAnalysisPending = false;
-  if (post && post.text && state.settings.autoAnalyze) {
-    state.autoAnalysisPending = true;
-    renderAnalysis();
-    autoAnalysisTimer = setTimeout(runAnalysis, AUTO_ANALYSIS_DELAY_MS);
+  state.autoAnalysisCancelled = false;
+  const key = `lca:panelContext:${state.windowId}`;
+  if (post) {
+    chrome.storage.session.set({ [key]: post });
+    restoreDraftForPost(post, epoch).then(() => {
+      if (epoch !== state.epoch || state.autoAnalysisCancelled || hasWork() || !state.post?.text || !state.settings.autoAnalyze) return;
+      state.autoAnalysisPending = true;
+      renderAnalysis();
+      autoAnalysisTimer = setTimeout(runAnalysis, AUTO_ANALYSIS_DELAY_MS);
+    });
+  } else {
+    chrome.storage.session.remove(key);
   }
+  renderOperations();
 }
 
 const KIND_LABELS = {
@@ -296,7 +476,9 @@ function renderPost() {
       : post.text || 'Nie udało się odczytać rozmowy. Rozwiń „Ostatnie wiadomości” i wklej je ręcznie.';
   } else {
     $('postAuthor').textContent = post.author || (post.manual ? 'Post wklejony ręcznie' : 'Autor nieznany');
-    $('postExcerpt').textContent = post.text || 'Nie udało się odczytać treści posta. Rozwiń „Pełny tekst posta” i wklej ją ręcznie.';
+    $('postExcerpt').textContent = post.text || (post.imageUrls?.length || post.media
+      ? 'Post zawiera obrazy lub inne media. Sprawdź zakres odczytu poniżej.'
+      : 'Nie udało się odczytać treści posta. Rozwiń „Pełny tekst posta” i wklej ją ręcznie.');
   }
   $('postReplyBadge').hidden = !post.replyTo;
   $('postReplyTo').hidden = !post.replyTo;
@@ -314,12 +496,112 @@ function renderPost() {
   $('insertComment').disabled = post.manual || post.tabId == null;
   $('insertComment').title = post.manual ? 'Post wklejony ręcznie: użyj „Kopiuj”.' : '';
   renderContext();
+  renderOperations();
 }
 
-function imageBlocks() {
-  if (!state.includeImages || !state.post?.imageUrls?.length) return Promise.resolve([]);
-  if (!state.imageBlocksPromise) state.imageBlocksPromise = fetchImageBlocks(state.post.imageUrls);
-  return state.imageBlocksPromise;
+function requestSnapshot() {
+  return {
+    post: structuredClone(state.post), epoch: state.epoch, revision: state.sourceRevision,
+    imagesEnabled: state.includeImages, attachments: [...state.attachments],
+    selectedPages: [...state.selectedPages], harmonicPromise: state.harmonicPromise,
+    system: buildSystemPrompt(state.settings), instruction: $('instruction').value,
+    choices: currentChoices(), language: state.settings.commentLanguage, scope: costScope(),
+  };
+}
+
+async function prepareContext(snapshot, task, waitMs) {
+  let timer;
+  try {
+    const background = snapshot.harmonicPromise ? await abortable(Promise.race([
+      snapshot.harmonicPromise, new Promise((resolve) => { timer = setTimeout(() => resolve(null), waitMs); }),
+    ]), task.signal) : null;
+    if (!task.current()) throw abortError();
+    const post = structuredClone(snapshot.post);
+    if (background) post.companyContext = formatBackground(background) || post.companyContext;
+    const attachments = snapshot.imagesEnabled ? snapshot.attachments.slice(0, MAX_MEDIA_IMAGES) : [];
+    const urls = snapshot.imagesEnabled ? (post.media?.kind === 'document'
+      ? snapshot.selectedPages : (post.imageUrls || []).slice(0, 2)).slice(0, MAX_MEDIA_IMAGES - attachments.length) : [];
+    const key = fingerprint(urls);
+    let failed = 0;
+    let blocks = state.imageCache.get(key);
+    if (!blocks) {
+      blocks = await fetchImageBlocks(urls, fetch, { signal: task.signal, maxImages: MAX_MEDIA_IMAGES, onFailure: () => failed++ });
+      if (!task.current()) throw abortError();
+      if (!failed) state.imageCache.set(key, blocks);
+    }
+    post.mediaCoverage = mediaCoverage(post, { imageCount: blocks.length, attachmentCount: attachments.length, failed, imagesEnabled: snapshot.imagesEnabled });
+    if (post.hasSeeMore) post.mediaCoverage += '\nTekst posta może być skrócony na stronie.';
+    state.lastCoverage = post.mediaCoverage;
+    renderMedia();
+    return { post, images: [...blocks, ...attachments.map((attachment) => attachment.block)] };
+  } finally { clearTimeout(timer); }
+}
+
+function renderMedia() {
+  const post = state.post;
+  $('mediaDetails').hidden = postKind() === 'message';
+  const pages = post?.media?.pages || [];
+  $('mediaCoverage').textContent = state.lastCoverage || mediaCoverage(post, {
+    imageCount: state.includeImages ? pages.filter((page) => state.selectedPages.has(page.url)).length : 0,
+    attachmentCount: state.includeImages ? state.attachments.length : 0, imagesEnabled: state.includeImages,
+  });
+  $('documentPages').replaceChildren(...pages.map((page, i) => {
+    const label = document.createElement('label'); label.className = 'check';
+    const input = document.createElement('input'); input.type = 'checkbox';
+    input.checked = state.selectedPages.has(page.url);
+    input.addEventListener('change', () => {
+      if (input.checked) state.selectedPages.add(page.url); else state.selectedPages.delete(page.url);
+      mediaChanged();
+    });
+    label.append(input, page.number ? ` Strona ${page.number}` : ` Obraz strony ${i + 1}`);
+    return label;
+  }));
+  $('attachmentList').replaceChildren(...state.attachments.map((item) => {
+    const li = document.createElement('li');
+    const name = document.createElement('span'); name.textContent = item.name;
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'link'; remove.textContent = 'Usuń';
+    remove.setAttribute('aria-label', `Usuń załącznik ${item.name}`);
+    remove.addEventListener('click', () => { state.attachments = state.attachments.filter((attachment) => attachment.id !== item.id); mediaChanged(); persistDraft(); });
+    li.append(name, remove); return li;
+  }));
+  const count = pages.length || post?.imageUrls?.length || 0;
+  $('imagesToggleWrap').hidden = count + state.attachments.length === 0;
+  const selectedCount = Math.min(MAX_MEDIA_IMAGES, (pages.length ? state.selectedPages.size : post?.imageUrls?.length || 0) + state.attachments.length);
+  $('imageCount').textContent = selectedCount > 1 ? `(${selectedCount})` : '';
+  $('includeImages').checked = state.includeImages;
+  if (post?.media) $('mediaDetails').open = true;
+}
+
+function mediaChanged() {
+  ops.cancel('analysis'); ops.cancel('comment'); ops.cancel('check');
+  state.lastCoverage = '';
+  state.analysisRaw = ''; state.analysisThinking = '';
+  renderAnalysis(); renderMedia();
+}
+
+async function addAttachments() {
+  const files = [...($('attachmentFiles').files || [])];
+  $('attachmentFiles').value = '';
+  if (!files.length) return;
+  if (postKind() === 'message') {
+    setStatus($('attachmentStatus'), 'Załączniki służą do analizy postów. W rozmowie wklej potrzebny tekst do kontekstu.', 'error'); return;
+  }
+  if (!state.post) setPost({ key: `manual:${crypto.randomUUID()}`, manual: true, author: '', text: '', tabId: null, imageUrls: [] });
+  $('mediaDetails').open = true;
+  const task = ops.start('attachments', 'Odczytuję załączniki…');
+  try {
+    if (files.length + state.attachments.length > MAX_MEDIA_IMAGES) throw new Error('Możesz dodać najwyżej 6 obrazów. Usuń część załączników i spróbuj ponownie.');
+    const total = state.attachments.reduce((sum, item) => sum + item.bytes, 0) + files.reduce((sum, file) => sum + file.size, 0);
+    if (total > MAX_ATTACHMENTS_BYTES) throw new Error('Załączniki mogą mieć łącznie najwyżej 12 MB. Zmniejsz obrazy i spróbuj ponownie.');
+    const attachments = await abortable(Promise.all(files.map(readAttachment)), task.signal);
+    if (!task.current()) return;
+    state.attachments.push(...attachments);
+    state.includeImages = true;
+    mediaChanged(); persistDraft();
+    setStatus($('attachmentStatus'), 'Dodano obrazy. Uruchom analizę lub pisanie, żeby użyć ich w zapytaniu.', 'ok');
+  } catch (error) {
+    if (task.owns()) setStatus($('attachmentStatus'), task.signal.aborted ? 'Przerwano odczyt załączników.' : error.message, task.signal.aborted ? '' : 'error');
+  } finally { ops.finish(task); }
 }
 
 async function useSelection() {
@@ -344,7 +626,7 @@ async function useSelection() {
 
 function useManual() {
   const text = cleanPostText($('manualPostText').value);
-  if (!text) {
+  if (!text && !state.attachments.length) {
     $('globalNotice').hidden = false;
     $('globalNotice').textContent = 'Wklej najpierw treść posta do pola powyżej.';
     return;
@@ -385,65 +667,46 @@ async function translateSelection({ tabId } = {}) {
   if ($('mainView').hidden) showView('main');
   const status = $('translateStatus');
   $('translateCard').hidden = false;
-  state.translateController?.abort();
   state.translateRaw = '';
   $('translateSource').textContent = '';
   renderTranslation();
-  // Owned before the first await: a second trigger or "Zamknij" while the page is still
-  // answering aborts this run, so an older result never overwrites a newer one.
-  const controller = new AbortController();
-  state.translateController = controller;
-  if (!ensureConfigOrExplain(status)) {
-    state.translateController = null;
-    return;
-  }
-
-  let text = '';
-  try {
-    const id = tabId ?? (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
-    if (id == null) throw new Error('no tab');
-    const response = await chrome.tabs.sendMessage(id, { type: 'lca:getSelection' });
-    text = String(response?.text || '').trim();
-  } catch {
-    if (!controller.signal.aborted) setStatus(status, TRANSLATE_MESSAGES.unreachable, 'error');
-    return;
-  }
-  if (controller.signal.aborted) return;
-  if (!text) {
-    setStatus(status, TRANSLATE_MESSAGES.noSelection, 'error');
-    return;
-  }
-  const truncated = text.length > MAX_SELECTION_CHARS;
-  if (truncated) text = text.slice(0, MAX_SELECTION_CHARS);
-  $('translateSource').textContent = `„${text.slice(0, 120)}${text.length > 120 ? '…' : ''}”`;
-
+  if (!ensureConfigOrExplain(status)) return;
+  const task = ops.start('selection', 'Tłumaczę zaznaczenie…', 'selection');
   const cfg = config('analysis');
-  setStatus(status, 'Tłumaczę…');
+  const system = buildSystemPrompt(state.settings);
   try {
-    const { text: raw } = await streamCompletion(
-      cfg,
-      { system: buildSystemPrompt(state.settings), messages: buildTranslateMessages(text) },
-      {
-        signal: controller.signal,
+    const id = tabId ?? (await abortable(chrome.tabs.query({ active: true, currentWindow: true }), task.signal))[0]?.id;
+    if (id == null) throw new Error(TRANSLATE_MESSAGES.unreachable);
+    let response;
+    try { response = await abortable(chrome.tabs.sendMessage(id, { type: 'lca:getSelection' }), task.signal); }
+    catch (error) { if (task.signal.aborted) throw error; throw new Error(TRANSLATE_MESSAGES.unreachable); }
+    if (!task.current()) return;
+    let text = String(response?.text || '').trim();
+    if (!text) throw new Error(TRANSLATE_MESSAGES.noSelection);
+    const truncated = text.length > MAX_SELECTION_CHARS;
+    text = text.slice(0, MAX_SELECTION_CHARS);
+    $('translateSource').textContent = `„${text.slice(0, 120)}${text.length > 120 ? '…' : ''}”`;
+    setStatus(status, 'Tłumaczę…');
+    const { text: raw, message } = await streamCompletion(cfg,
+      { system, messages: buildTranslateMessages(text) }, {
+        signal: task.signal,
         onText: (partial) => {
-          if (state.translateController !== controller) return; // superseded or closed
+          if (!task.current()) return;
           state.translateRaw = partial;
-          scheduleRender('translate', () => renderTranslation({ streaming: true }));
+          scheduleRender('translate', () => { if (task.current()) renderTranslation({ streaming: true }); });
         },
-      },
-    );
-    if (state.translateController !== controller) return;
+      });
+    if (!task.current()) return;
+    if (!parseTagged(raw, TRANSLATE_TAGS).translation) throw new Error('Model nie zwrócił tłumaczenia. Spróbuj ponownie.');
     state.translateRaw = raw;
-    setStatus(status, truncated ? TRANSLATE_MESSAGES.truncated : '', truncated ? 'warn' : '');
+    addCost(message, cfg, task, 'selection');
+    const cost = formatCost(estimateCostUsd(message.model || cfg.model, message.usage));
+    setStatus(status, `${truncated ? TRANSLATE_MESSAGES.truncated + ' ' : ''}${cost ? `Koszt tłumaczenia: ${cost} (szacunek).` : ''}`, truncated ? 'warn' : '');
   } catch (error) {
-    const msg = describeError(error, cfg);
-    if (msg) setStatus(status, msg, 'error');
+    taskError(error, cfg, task, status, () => translateSelection({ tabId }), { independent: true });
   } finally {
-    if (state.translateController === controller) {
-      state.translateController = null;
-      cancelRender('translate');
-      renderTranslation();
-    }
+    if (task.owns()) { cancelRender('translate'); renderTranslation(); }
+    ops.finish(task);
   }
 }
 
@@ -465,8 +728,9 @@ async function handleTranslateRequest(request) {
 }
 
 function closeTranslation() {
-  state.translateController?.abort();
-  state.translateController = null;
+  if (state.retry?.taskName === 'selection') state.retry = null;
+  ops.cancelAll({ scope: 'selection', discard: true });
+  cancelRender('translate');
   state.translateRaw = '';
   $('translateCard').hidden = true;
   setStatus($('translateStatus'), '');
@@ -486,35 +750,27 @@ async function copyTranslation() {
 // --- context (LinkedIn extras + optional Harmonic) ---------------------------
 
 function startHarmonic(post) {
-  const s = state.settings;
-  const enabled = s.useHarmonic && s.harmonicApiKey.trim() && post && !post.manual && post.authorProfile;
+  const settings = state.settings;
+  const enabled = settings.useHarmonic && settings.harmonicApiKey.trim() && post && !post.manual && post.authorProfile;
   if (!enabled) {
     state.harmonic = { status: 'off', company: null, person: null, error: '' };
-    state.harmonicPromise = null;
-    return;
+    state.harmonicPromise = null; return;
   }
+  const task = ops.start('harmonic', 'Pobieram kontekst Harmonic…');
   state.harmonic = { status: 'loading', company: null, person: null, error: '' };
-  const key = post.key;
-  state.harmonicPromise = fetchHarmonicContext({ profile: post.authorProfile, apiKey: s.harmonicApiKey.trim() })
+  state.harmonicPromise = fetchHarmonicContext({ profile: post.authorProfile, apiKey: settings.harmonicApiKey.trim(), signal: task.signal })
     .then((ctx) => {
-      if (state.post?.key !== key) return;
+      if (!task.current()) return null;
       state.harmonic = { status: 'done', ...ctx, error: '' };
-      const background = formatBackground(ctx);
-      state.post = { ...state.post, companyContext: background || null };
+      state.post = { ...state.post, companyContext: formatBackground(ctx) || null };
+      return ctx;
     })
     .catch((error) => {
-      if (state.post?.key !== key) return;
-      state.harmonic = { status: 'error', company: null, person: null, error: error.message };
+      if (task.owns()) state.harmonic = { status: 'error', company: null, person: null,
+        error: task.signal.aborted ? 'Przerwano pobieranie danych.' : error.message };
+      return null;
     })
-    .finally(() => {
-      if (state.post?.key === key) renderContext();
-    });
-}
-
-/** Wait for Harmonic data, but never longer than `ms` (the comment must not hang on it). */
-function waitForHarmonic(ms) {
-  if (!state.harmonicPromise) return Promise.resolve();
-  return Promise.race([state.harmonicPromise, new Promise((resolve) => setTimeout(resolve, ms))]);
+    .finally(() => { if (task.owns()) renderContext(); ops.finish(task); });
 }
 
 function renderContext() {
@@ -581,50 +837,43 @@ function renderOtherComments(others) {
       return li;
     }),
   );
-  const running = Boolean(state.controllers.translateComments);
+  const running = ops.has('translateComments');
   $('translateComments').hidden = others.length === 0 || (state.commentTranslations.length > 0 && !running);
   $('translateComments').disabled = running;
 }
 
 /** Translate the comments under the post into Polish (one request, analysis settings). */
 async function translateComments() {
-  const others = otherComments();
-  if (others.length === 0) return;
-  const status = $('translateCommentsStatus');
-  if (!ensureConfigOrExplain(status)) return;
-  state.controllers.translateComments?.abort();
-  const controller = new AbortController();
-  state.controllers.translateComments = controller;
-  const key = state.post.key;
+  const others = structuredClone(otherComments());
+  if (!others.length || !ensureConfigOrExplain($('translateCommentsStatus'))) return;
+  const task = ops.start('translateComments', 'Tłumaczę komentarze…');
   const cfg = config('analysis');
+  const scope = costScope();
+  const system = buildSystemPrompt(state.settings);
   const parse = (raw) => parseItems(parseTagged(raw, TRANSLATE_COMMENTS_TAGS).translations, 'item');
   state.commentTranslations = [];
-  setStatus(status, 'Tłumaczę komentarze…');
-  renderContext();
+  setStatus($('translateCommentsStatus'), 'Tłumaczę komentarze…'); renderContext();
   try {
-    const { text, message } = await streamCompletion(
-      cfg,
-      { system: buildSystemPrompt(state.settings), messages: buildTranslateCommentsMessages(others) },
-      {
-        signal: controller.signal,
+    const { text, message } = await streamCompletion(cfg,
+      { system, messages: buildTranslateCommentsMessages(others) }, {
+        signal: task.signal,
         onText: (partial) => {
+          if (!task.current()) return;
           state.commentTranslations = parse(partial);
-          scheduleRender('comments', renderContext);
+          scheduleRender('comments', () => { if (task.current()) renderContext(); });
         },
-      },
-    );
-    state.commentTranslations = parse(text);
-    setStatus(status, state.commentTranslations.length ? '' : 'Model nie zwrócił tłumaczeń. Spróbuj ponownie.', state.commentTranslations.length ? '' : 'error');
-    addCost(message);
+      });
+    if (!task.current()) return;
+    const translations = parse(text);
+    if (translations.length !== others.length) throw new Error('Model nie przetłumaczył wszystkich komentarzy. Spróbuj ponownie.');
+    state.commentTranslations = translations;
+    setStatus($('translateCommentsStatus'), '');
+    addCost(message, cfg, task, scope);
   } catch (error) {
-    const msg = describeError(error, cfg);
-    if (msg) setStatus(status, msg, 'error');
+    taskError(error, cfg, task, $('translateCommentsStatus'), translateComments);
   } finally {
-    if (state.controllers.translateComments === controller) state.controllers.translateComments = null;
-    if (state.post?.key === key) {
-      cancelRender('comments');
-      renderContext();
-    }
+    if (task.owns()) { cancelRender('comments'); ops.finish(task); renderContext(); }
+    else ops.finish(task);
   }
 }
 
@@ -647,61 +896,66 @@ function renderAnalysis() {
       btn.textContent = idea;
       btn.addEventListener('click', () => {
         $('instruction').value = idea;
-        $('instruction').focus();
+        $('instruction').focus(); state.draftDirty = true; persistDraft();
       });
       li.append(btn);
       return li;
     }),
   );
-  $('runAnalysis').hidden = Boolean(state.analysisRaw) || Boolean(state.controllers.analysis) || state.autoAnalysisPending;
-  if (state.autoAnalysisPending && !state.controllers.analysis) setStatus($('analysisStatus'), 'Za chwilę przetłumaczę post…');
+  $('runAnalysis').hidden = Boolean(state.analysisRaw) || ops.has('analysis') || state.autoAnalysisPending;
+  if (state.autoAnalysisPending && !ops.has('analysis')) setStatus($('analysisStatus'), 'Za chwilę przetłumaczę post…');
 }
 
-async function runAnalysis() {
+const analysisCache = new Map();
+async function runAnalysis({ force = false } = {}) {
   state.autoAnalysisPending = false;
   clearTimeout(autoAnalysisTimer);
   const status = $('analysisStatus');
-  if (!state.post?.text) {
-    setStatus(status, 'Brak treści posta do analizy. Uzupełnij „Pełny tekst posta”.', 'error');
-    return;
+  if (!state.post || (!state.post.text && !state.attachments.length && !state.post.media && !state.post.imageUrls?.length)) {
+    setStatus(status, 'Brak treści do analizy. Uzupełnij tekst albo dodaj obrazy.', 'error'); return;
   }
   if (!ensureConfigOrExplain(status)) return;
-  state.controllers.analysis?.abort();
-  const controller = new AbortController();
-  state.controllers.analysis = controller;
-  state.analysisRaw = '';
-  state.analysisThinking = '';
-  renderAnalysis();
-  setStatus(status, 'Tłumaczę post i szukam pomysłów…');
+  const snapshot = requestSnapshot();
+  const cfg = config('analysis');
+  const task = ops.start('analysis', 'Analizuję kontekst…');
+  state.analysisRaw = ''; state.analysisThinking = '';
+  renderAnalysis(); setStatus(status, 'Tłumaczę i szukam pomysłów…');
   try {
-    await waitForHarmonic(3000);
-    const images = await imageBlocks();
-    const { text, message } = await streamCompletion(
-      config('analysis'),
-      { system: buildSystemPrompt(state.settings), messages: buildAnalysisMessages(state.post, images) },
-      {
-        signal: controller.signal,
+    const { post, images } = await prepareContext(snapshot, task, 3000);
+    if (!task.current()) return;
+    const messages = buildAnalysisMessages(post, images);
+    // Contains only a fingerprint, never a durable copy of the source or user profile.
+    const key = fingerprint([snapshot.system, messages, cfg.provider, cfg.model, cfg.effort, cfg.thinking, cfg.showThinking]);
+    let result = !force && analysisCache.get(key);
+    if (!result) {
+      result = await streamCompletion(cfg, { system: snapshot.system, messages }, {
+        signal: task.signal,
         onText: (partial) => {
+          if (!task.current()) return;
           state.analysisRaw = partial;
-          scheduleRender('analysis', renderAnalysis);
+          scheduleRender('analysis', () => { if (task.current()) renderAnalysis(); });
         },
         onThinking: (thinking) => {
+          if (!task.current()) return;
           state.analysisThinking = thinking;
-          scheduleRender('analysis', renderAnalysis);
+          scheduleRender('analysis', () => { if (task.current()) renderAnalysis(); });
         },
-      },
-    );
-    state.analysisRaw = text;
-    state.postLanguage = (parseTagged(text, ['post_language']).post_language || '').toLowerCase().slice(0, 5) || null;
-    setStatus(status, '');
-    addCost(message);
+      });
+      if (!task.current()) return;
+      if (!parseTagged(result.text, ANALYSIS_TAGS).translation) throw new Error('Model nie zwrócił analizy. Spróbuj ponownie.');
+      analysisCache.set(key, result);
+      if (analysisCache.size > 10) analysisCache.delete(analysisCache.keys().next().value);
+      addCost(result.message, cfg, task, snapshot.scope);
+      setStatus(status, '');
+    } else setStatus(status, 'Przywrócono identyczną analizę z tej sesji, bez kolejnego zapytania.');
+    state.analysisRaw = result.text;
+    state.analysisThinking = result.thinking;
+    state.postLanguage = (parseTagged(result.text, ['post_language']).post_language || '').toLowerCase().slice(0, 5) || null;
   } catch (error) {
-    const msg = describeError(error, config('analysis'));
-    if (msg) setStatus(status, msg, 'error');
+    taskError(error, cfg, task, status, () => runAnalysis({ force: true }));
   } finally {
-    if (state.controllers.analysis === controller) state.controllers.analysis = null;
-    cancelRender('analysis');
-    renderAnalysis();
+    if (task.owns()) { cancelRender('analysis'); ops.finish(task); renderAnalysis(); }
+    else ops.finish(task);
   }
 }
 
@@ -734,9 +988,8 @@ function renderResult(raw, { streaming }) {
  * settings (e.g. after a 401) works for the next refinement of the same comment.
  */
 function frozenWriteConfig() {
-  const now = config('write');
-  if (!state.writeConfig) return now;
-  return state.writeConfig.provider === now.provider ? { ...state.writeConfig, apiKey: now.apiKey } : state.writeConfig;
+  if (!state.writeConfig) return config('write');
+  return { ...state.writeConfig, apiKey: (state.settings.apiKeys?.[state.writeConfig.provider] || '').trim() };
 }
 
 /** Tone and length chosen in the panel right now. */
@@ -749,7 +1002,7 @@ function currentChoices() {
  * A refinement passes them to the model, which otherwise keeps the old ones.
  */
 function choiceChanges() {
-  if (!state.writtenWith || state.conversation.length === 0) return null;
+  if (!state.writtenWith || !$('commentText').value.trim()) return null;
   const now = currentChoices();
   const changed = {};
   if (now.tone !== state.writtenWith.tone) changed.tone = now.tone;
@@ -766,117 +1019,137 @@ function renderRefineHint() {
  * On failure the last (unanswered) user message is removed, so the history stays valid.
  * @returns {Promise<boolean>} true when the reply arrived
  */
-async function sendConversation(statusText) {
-  const status = $('resultStatus');
-  state.controllers.comment?.abort();
-  const controller = new AbortController();
-  state.controllers.comment = controller;
+async function sendConversation({ task, cfg, system, messages, previous, snapshot, statusText }) {
   $('resultSection').hidden = false;
-  setStatus($('insertStatus'), '');
-  setStatus(status, statusText);
-  $('writeComment').disabled = true;
-  state.controllers.check?.abort();
+  setStatus($('insertStatus'), ''); setStatus($('resultStatus'), statusText);
+  ops.cancel('check'); ops.cancel('backTranslation');
   state.check = { status: 'idle', issues: [], checkedText: '', error: '' };
   $('qualityBox').hidden = true;
-  const cfg = frozenWriteConfig();
   let partialRaw = '';
   state.resultThinking = '';
-  try {
-    const { text, message } = await streamCompletion(
-      cfg,
-      { system: writingSystem(), messages: state.conversation },
-      {
-        signal: controller.signal,
-        onText: (partial) => {
-          partialRaw = partial;
-          scheduleRender('result', () => renderResult(partialRaw, { streaming: true }));
-        },
-        onThinking: (thinking) => {
-          state.resultThinking = thinking;
-          scheduleRender('result', () => renderResult(partialRaw, { streaming: true }));
-        },
-      },
-    );
-    // Append the full content unchanged (thinking blocks included) to continue the thread.
-    state.conversation.push({ role: 'assistant', content: message.content });
-    cancelRender('result');
-    renderResult(text, { streaming: false });
-    state.lastResultRaw = text;
-    state.lastResultThinking = state.resultThinking;
-    state.lastGeneratedComment = $('commentText').value;
-    runCheck();
-    setStatus(status, message.stop_reason === 'max_tokens' ? 'Odpowiedź została ucięta (limit długości). Spróbuj „Popraw: krócej”.' : '', message.stop_reason === 'max_tokens' ? 'error' : '');
-    addCost(message);
-    return true;
-  } catch (error) {
-    state.conversation.pop();
-    const msg = describeError(error, cfg);
-    if (msg) setStatus(status, msg, 'error');
-    cancelRender('result');
-    state.resultThinking = state.lastResultThinking;
-    renderResult(state.lastResultRaw, { streaming: false });
-    return false;
-  } finally {
-    if (state.controllers.comment === controller) state.controllers.comment = null;
-    $('writeComment').disabled = false;
+  const result = await streamCompletion(cfg, { system, messages }, {
+    signal: task.signal,
+    onText: (partial) => {
+      if (!task.current()) return;
+      partialRaw = partial;
+      scheduleRender('result', () => { if (task.current()) renderResult(partialRaw, { streaming: true }); });
+    },
+    onThinking: (thinking) => {
+      if (!task.current()) return;
+      state.resultThinking = thinking;
+      scheduleRender('result', () => { if (task.current()) renderResult(partialRaw, { streaming: true }); });
+    },
+  });
+  if (!task.current()) return false;
+  const parsed = parseTagged(result.text, COMMENT_TAGS);
+  if (!parsed.comment || (result.message.stop_reason !== 'max_tokens' && !result.text.includes('</comment>'))) {
+    throw new Error('Model nie zwrócił kompletnego tekstu. Spróbuj ponownie. Dotychczasowy szkic został zachowany.');
   }
+  state.conversation = [...messages, { role: 'assistant', content: result.message.content }];
+  state.writeConfig = cfg;
+  state.writtenInstruction = snapshot.instruction;
+  state.writtenWith = snapshot.choices;
+  cancelRender('result'); renderResult(result.text, { streaming: false });
+  state.lastResultRaw = result.text;
+  state.lastGeneratedComment = $('commentText').value;
+  state.translationFor = parsed.back_translation ? state.lastGeneratedComment : '';
+  state.lastResultThinking = state.resultThinking;
+  state.versions = pushVersion(pushVersion(state.versions, previous), currentVersion());
+  state.versionCursor = state.versions.length - 1;
+  renderVersions(); renderEditState();
+  const truncated = result.message.stop_reason === 'max_tokens';
+  setStatus($('resultStatus'), truncated ? 'Odpowiedź została ucięta (limit długości). Spróbuj „Popraw: krócej”.' : '', truncated ? 'warn' : '');
+  addCost(result.message, cfg, task, snapshot.scope);
+  persistDraft();
+  return true;
 }
 
 async function writeComment() {
-  if (!state.post) return;
-  if (!ensureConfigOrExplain($('resultStatus'))) {
-    $('resultSection').hidden = false;
-    return;
-  }
+  if (!state.post || state.draftLoading || ops.has('comment')) return;
+  const cfg = config('write');
+  const problem = validateConfig(cfg);
+  if (problem) { $('resultSection').hidden = false; setStatus($('resultStatus'), problem, 'error'); return; }
+  const snapshot = requestSnapshot();
+  const previous = currentVersion();
+  const system = writingSystem();
+  const task = ops.start('comment', 'Piszę odpowiedź…');
+  state.retry = null;
   $('resultSection').hidden = false;
   setStatus($('resultStatus'), 'Przygotowuję…');
-  // Bring step 4 into view so the comment is visible while it streams in.
-  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  $('resultSection').scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
-  await waitForHarmonic(8000);
-  const images = await imageBlocks();
-  state.conversation = buildCommentMessages({
-    post: state.post,
-    imageBlocks: images,
-    instruction: $('instruction').value,
-    tone: $('tone').value,
-    length: $('length').value,
-    language: state.settings.commentLanguage,
-  });
-  state.lastGeneratedComment = '';
-  state.lastResultRaw = '';
-  state.lastResultThinking = '';
-  state.writeConfig = config('write');
-  state.writtenWith = currentChoices();
-  renderRefineHint();
-  await sendConversation('Piszę komentarz…');
+  $('resultSection').scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  let success = false;
+  try {
+    const { post, images } = await prepareContext(snapshot, task, 8000);
+    if (!task.current()) return;
+    const messages = buildCommentMessages({ post, imageBlocks: images, instruction: snapshot.instruction,
+      tone: snapshot.choices.tone, length: snapshot.choices.length, language: snapshot.language });
+    success = await sendConversation({ task, cfg, system, messages, previous, snapshot, statusText: 'Piszę…' });
+  } catch (error) {
+    if (task.owns()) { cancelRender('result'); restoreVersion(previous); }
+    taskError(error, cfg, task, $('resultStatus'), writeComment, { text: previous.comment.trim() });
+    persistDraft();
+  } finally {
+    ops.finish(task); renderQuality();
+    if (success) runCheck();
+  }
 }
 
 async function refine(event) {
   event.preventDefault();
   const feedback = $('refineInput').value.trim();
-  if (state.conversation.length === 0) {
-    setStatus($('resultStatus'), 'Najpierw napisz komentarz (krok 3).', 'error');
-    return;
+  if (!$('commentText').value.trim() || !state.post) {
+    setStatus($('resultStatus'), 'Najpierw napisz albo przywróć szkic.', 'error'); return;
   }
   const changes = choiceChanges();
   if (!feedback && !changes) {
-    setStatus($('resultStatus'), 'Wpisz, co poprawić, np. „krócej” albo „bez pytania na końcu”.', 'error');
-    return;
+    setStatus($('resultStatus'), 'Wpisz, co poprawić, np. „krócej” albo „bez pytania na końcu”.', 'error'); return;
   }
   const current = $('commentText').value.trim();
-  const edited = current && current !== state.lastGeneratedComment.trim() ? current : null;
-  $('refineInput').value = '';
-  await sendRevision(buildRefineMessage(feedback, edited, changes), feedback ? 'Poprawiam…' : 'Przepisuję według nowego tonu i długości…');
+  const edited = !state.conversation.length || current !== state.lastGeneratedComment.trim() ? current : null;
+  const ok = await sendRevision(buildRefineMessage(feedback, edited, changes), feedback ? 'Poprawiam…' : 'Zmieniam ton i długość…');
+  if (ok && $('refineInput').value.trim() === feedback) { $('refineInput').value = ''; persistDraft(); }
 }
 
-/** Send one revision; on success the tone/length it carried become the comment's own. */
 async function sendRevision(content, statusText) {
-  const sent = currentChoices();
-  state.conversation.push({ role: 'user', content });
-  const ok = await sendConversation(statusText);
-  if (ok) state.writtenWith = sent;
-  renderRefineHint();
+  if (ops.has('comment') || state.draftLoading || !state.post) return false;
+  const cfg = frozenWriteConfig();
+  const problem = validateConfig(cfg);
+  if (problem) { setStatus($('resultStatus'), problem, 'error'); return false; }
+  const previous = currentVersion();
+  const snapshot = requestSnapshot();
+  // Profile and voice changes apply to the next request. Capture them before
+  // awaiting context, while keeping API configuration and signed history intact.
+  const system = writingSystem();
+  const conversation = structuredClone(state.conversation);
+  const task = ops.start('comment', 'Poprawiam tekst…');
+  state.retry = null;
+  let success = false;
+  try {
+    let messages;
+    if (conversation.length) messages = [...conversation, { role: 'user', content }];
+    else {
+      // Restored drafts contain only the user's own text. Rebuild a fresh request
+      // from the currently selected source; never persist the old DM/API thread.
+      const { post, images } = await prepareContext(snapshot, task, 8000);
+      if (!task.current()) return false;
+      messages = buildCommentMessages({ post, imageBlocks: images, instruction: snapshot.instruction,
+        tone: snapshot.choices.tone, length: snapshot.choices.length, language: snapshot.language });
+      const first = messages[0];
+      const revision = content.includes('<current_comment>') ? content
+        : `${buildRefineMessage('', previous.comment)}\n\n${content}`;
+      if (typeof first.content === 'string') first.content += '\n\n' + revision;
+      else first.content.push({ type: 'text', text: revision });
+    }
+    success = await sendConversation({ task, cfg, system, messages, previous, snapshot, statusText });
+    return success;
+  } catch (error) {
+    if (task.owns()) { cancelRender('result'); restoreVersion(previous); }
+    taskError(error, cfg, task, $('resultStatus'), () => sendRevision(content, statusText), { text: previous.comment.trim() });
+    persistDraft(); return false;
+  } finally {
+    ops.finish(task); renderQuality();
+    if (success) runCheck();
+  }
 }
 
 // --- quality check ---------------------------------------------------------
@@ -909,12 +1182,12 @@ function renderQuality() {
     setStatus(
       $('qualityStatus'),
       postKind() === 'message'
-        ? '✓ Odpowiedź jest konkretna i odnosi się do ostatniej wiadomości.'
-        : '✓ Komentarz jest konkretny: nie powtarza posta i nie brzmi ogólnikowo.',
+        ? '✓ Model nie wykrył problemów w odpowiedzi.'
+        : '✓ Model nie wykrył problemów w komentarzu.',
       'ok',
     );
   } else {
-    setStatus($('qualityStatus'), stale ? 'Tekst zmieniony po sprawdzeniu.' : '');
+    setStatus($('qualityStatus'), stale ? 'Tekst zmieniony po sprawdzeniu.' : 'Nie sprawdzono tej wersji tekstu.');
   }
   $('qualityIssues').replaceChildren(
     ...issues.map((issue) => {
@@ -923,45 +1196,67 @@ function renderQuality() {
       return li;
     }),
   );
-  $('makeSpecific').hidden = issues.length === 0 || state.conversation.length === 0;
-  $('recheck').hidden = status === 'running' || !(stale || status === 'error');
+  $('makeSpecific').hidden = issues.length === 0 || !$('commentText').value.trim();
+  $('recheck').hidden = status === 'running' || !(stale || status === 'error' || status === 'idle');
 }
 
 /** Ask the model whether the comment adds something (runs after each draft, non-blocking). */
 async function runCheck() {
   const comment = $('commentText').value.trim();
-  if (!comment || !state.post || validateConfig(config('analysis'))) return;
-  state.controllers.check?.abort();
-  const controller = new AbortController();
-  state.controllers.check = controller;
+  const cfg = config('analysis');
+  if (!comment || !state.post || validateConfig(cfg)) return;
+  const task = ops.start('check', 'Sprawdzam tekst…');
+  const post = structuredClone(state.post);
+  const scope = costScope();
+  const system = buildSystemPrompt(state.settings);
+  const instruction = state.writtenInstruction || $('instruction').value;
   state.check = { status: 'running', issues: [], checkedText: comment, error: '' };
   renderQuality();
   try {
-    const { text, message } = await streamCompletion(
-      config('analysis'),
-      {
-        system: buildSystemPrompt(state.settings),
-        messages: buildCheckMessages({ post: state.post, comment, instruction: $('instruction').value }),
-      },
-      { signal: controller.signal },
-    );
-    const parsed = parseTagged(text, CHECK_TAGS);
-    const issues = parseIssues(parsed.issues);
-    state.check = { status: issues.length || /warn/i.test(parsed.verdict || '') ? 'warn' : 'ok', issues, checkedText: comment, error: '' };
-    addCost(message);
+    const { text, message } = await streamCompletion(cfg,
+      { system, messages: buildCheckMessages({ post, comment, instruction }) }, { signal: task.signal });
+    if (!task.current() || $('commentText').value.trim() !== comment) return;
+    addCost(message, cfg, task, scope);
+    const checked = parseCheckResult(text, message.stop_reason);
+    state.check = { ...checked, checkedText: comment, error: '' };
   } catch (error) {
-    const msg = describeError(error, config('analysis'));
-    if (msg === null) return; // aborted by a newer draft
-    state.check = { status: 'error', issues: [], checkedText: comment, error: msg };
-  } finally {
-    if (state.controllers.check === controller) state.controllers.check = null;
-    renderQuality();
-  }
+    if (!task.owns()) return;
+    if (task.signal.aborted) {
+      state.check = { status: 'idle', issues: [], checkedText: '', error: '' };
+    } else {
+      state.check = { status: 'error', issues: [], checkedText: comment, error: describeError(error, cfg) };
+      offerRetry(runCheck, { text: comment });
+    }
+  } finally { ops.finish(task); renderQuality(); }
+}
+
+async function refreshBackTranslation() {
+  const comment = $('commentText').value.trim();
+  if (!comment || !ensureConfigOrExplain($('backTranslationStatus'))) return;
+  const cfg = config('analysis');
+  const system = buildSystemPrompt(state.settings);
+  const scope = costScope();
+  const task = ops.start('backTranslation', 'Odświeżam tłumaczenie…');
+  $('backTranslationStatus').hidden = false;
+  setStatus($('backTranslationStatus'), 'Tłumaczę aktualną wersję…');
+  try {
+    const { text, message } = await streamCompletion(cfg,
+      { system, messages: buildBackTranslationMessages(comment) }, { signal: task.signal });
+    if (!task.current() || $('commentText').value.trim() !== comment) return;
+    addCost(message, cfg, task, scope);
+    const translated = parseTagged(text, ['back_translation']).back_translation;
+    if (!translated || !text.includes('</back_translation>') || message.stop_reason !== 'end_turn') throw new Error('Model nie zwrócił pełnego tłumaczenia. Spróbuj ponownie.');
+    $('backTranslation').textContent = translated;
+    state.translationFor = comment;
+    renderEditState(); persistDraft();
+  } catch (error) {
+    taskError(error, cfg, task, $('backTranslationStatus'), refreshBackTranslation, { text: comment });
+  } finally { ops.finish(task); }
 }
 
 async function makeSpecific() {
   const issues = currentIssues();
-  if (!issues.length || state.conversation.length === 0) return;
+  if (!issues.length || !$('commentText').value.trim()) return;
   const current = $('commentText').value.trim();
   const edited = current && current !== state.lastGeneratedComment.trim() ? current : null;
   await sendRevision(buildRefineMessage(buildSpecificFeedback(issues), edited, choiceChanges()), 'Poprawiam: konkretniej…');
@@ -982,15 +1277,10 @@ function writingSystem() {
   return [buildSystemPrompt(state.settings), buildVoiceBlock({ examples, voiceNotes, kind })];
 }
 
-async function recordHistory(finalText) {
+async function recordHistory(finalText, captured = null) {
   if (!state.settings.learnVoice || !state.post) return;
-  const entry = createHistoryEntry({
-    post: state.post,
-    instruction: $('instruction').value,
-    generated: state.lastGeneratedComment,
-    final: finalText,
-    language: state.postLanguage,
-  });
+  const entry = captured || createHistoryEntry({ post: state.post, instruction: $('instruction').value,
+    generated: state.lastGeneratedComment, final: finalText, language: state.postLanguage });
   state.history = addToHistory(state.history, entry);
   await chrome.storage.local.set({ history: state.history });
   if (shouldLearn(state.history, state.settings, entry.kind)) {
@@ -1000,38 +1290,41 @@ async function recordHistory(finalText) {
 
 /** Summarize the user's edits into preferences, separately for comments and messages. */
 async function learnVoice({ statusEl, append = false, kinds = ['comment', 'message'] } = {}) {
-  if (state.learning) return;
-  const todo = kinds.filter((kind) => state.history.some((item) => item.edited && (item.kind || 'comment') === kind));
-  if (todo.length === 0) {
-    setStatus(statusEl, 'Brak poprawionych tekstów do nauki. Wtyczka uczy się z komentarzy i wiadomości, które zmienisz ręcznie przed wstawieniem.', 'error');
-    return;
-  }
-  if (validateConfig(config())) return;
-  state.learning = true;
-  const note = (text, kind) => setStatus(statusEl, append && statusEl.textContent ? `${statusEl.textContent} ${text}` : text, kind);
+  if (ops.has('learning')) return;
+  const history = structuredClone(state.history);
+  const settings = structuredClone(state.settings);
+  const todo = kinds.filter((kind) => history.some((item) => item.edited && (item.kind || 'comment') === kind));
+  if (!todo.length) { setStatus(statusEl, 'Brak poprawionych tekstów do nauki. Zmień szkic ręcznie przed wstawieniem lub kopiowaniem.', 'error'); return; }
+  const cfg = config('analysis');
+  if (validateConfig(cfg)) return;
+  const scope = costScope();
+  const epoch = state.epoch;
+  const task = ops.start('learning', 'Uczę się Twojego stylu…', 'panel');
   const done = [];
   try {
     for (const kind of todo) {
       const fields = VOICE_FIELDS[kind];
-      const { text, message } = await streamCompletion(config('analysis'), {
-        system: buildSystemPrompt(state.settings),
-        messages: buildLearnMessages(state.history, state.settings[fields.notes], kind),
-      });
+      const { text, message } = await streamCompletion(cfg, {
+        system: buildSystemPrompt(settings), messages: buildLearnMessages(history, settings[fields.notes], kind),
+      }, { signal: task.signal });
+      if (!task.current()) return;
       const preferences = parseTagged(text, VOICE_TAGS).preferences;
-      if (!preferences) throw new Error('Model nie zwrócił listy preferencji.');
+      if (!preferences || !text.includes('</preferences>')) throw new Error('Model nie zwrócił pełnej listy preferencji.');
       state.settings = mergeSettings({ ...state.settings, [fields.notes]: preferences, [fields.learnedAt]: Date.now() });
       await saveSettings(chrome.storage.local, state.settings);
+      if (!task.current()) return;
       if (!$('settingsView').hidden) $(fields.notes).value = preferences;
-      addCost(message);
+      addCost(message, cfg, task, scope);
       done.push(kind === 'message' ? 'wiadomości' : 'komentarzy');
     }
     renderVoiceStats();
-    note(`Zaktualizowano Twoje preferencje stylu dla: ${done.join(' i ')} (Ustawienia → Twój styl).`, 'ok');
+    if (state.epoch === epoch || statusEl === $('voiceStatus')) {
+      const note = `Zaktualizowano Twoje preferencje stylu dla: ${done.join(' i ')} (Ustawienia → Twój styl).`;
+      setStatus(statusEl, append && statusEl.textContent ? `${statusEl.textContent} ${note}` : note, 'ok');
+    }
   } catch (error) {
-    note(`Nie udało się zaktualizować preferencji stylu: ${describeError(error, config('analysis')) || error.message}`, 'error');
-  } finally {
-    state.learning = false;
-  }
+    if (state.epoch === epoch || statusEl === $('voiceStatus')) taskError(error, cfg, task, statusEl, null);
+  } finally { ops.finish(task); }
 }
 
 function renderVoiceStats() {
@@ -1060,31 +1353,37 @@ async function clearHistory() {
 
 async function copyComment() {
   const text = $('commentText').value.trim();
-  if (!text) return;
+  if (!text || ops.has('comment') || !state.post) return;
+  const epoch = state.epoch;
+  const captured = createHistoryEntry({ post: state.post, instruction: $('instruction').value,
+    generated: state.lastGeneratedComment, final: text, language: state.postLanguage });
   try {
     await navigator.clipboard.writeText(text);
-    setStatus($('insertStatus'), 'Skopiowano. Wklej komentarz w pole pod postem (Ctrl+V).', 'ok');
-    await recordHistory(text);
+    if (epoch === state.epoch) setStatus($('insertStatus'), 'Skopiowano. Wklej tekst do właściwego pola na LinkedInie (Ctrl+V).', 'ok');
+    await recordHistory(text, captured);
   } catch {
-    setStatus($('insertStatus'), 'Nie udało się skopiować. Zaznacz tekst komentarza i naciśnij Ctrl+C.', 'error');
+    if (epoch === state.epoch) setStatus($('insertStatus'), 'Nie udało się skopiować. Zaznacz tekst i naciśnij Ctrl+C.', 'error');
   }
 }
 
 async function insertComment() {
   const text = $('commentText').value.trim();
   const post = state.post;
-  if (!text || !post || post.tabId == null) return;
+  if (!text || !post || post.tabId == null || ops.has('comment')) return;
+  const epoch = state.epoch;
+  const captured = createHistoryEntry({ post, instruction: $('instruction').value, generated: state.lastGeneratedComment, final: text, language: state.postLanguage });
   let response = null;
   try {
     // Only the frame the post or conversation came from (messaging is in an iframe).
     response = await chrome.tabs.sendMessage(
       post.tabId,
-      { type: 'lca:insert', editorToken: post.editorToken, postKey: post.key, text },
+      { type: 'lca:insert', editorToken: post.editorToken, postKey: post.key, text, expectedTarget: targetIdentity(post), expectedRevision: state.sourceRevision },
       { frameId: post.frameId ?? 0 },
     );
   } catch {
     response = { ok: false, reason: 'tab-unreachable' };
   }
+  if (epoch !== state.epoch) return;
   if (response?.ok) {
     setStatus(
       $('insertStatus'),
@@ -1093,11 +1392,12 @@ async function insertComment() {
         : 'Wstawiono pod postem. Przeczytaj go jeszcze raz na LinkedInie i kliknij „Opublikuj”.',
       'ok',
     );
-    await recordHistory(text);
+    await recordHistory(text, captured);
     return;
   }
   // Fallback: clipboard, with a precise reason.
   const reasons = {
+    'context-changed': 'Kontekst na LinkedInie zmienił się. Kliknij ponownie we właściwe pole i sprawdź szkic.',
     'editor-missing': 'Pole tekstowe zniknęło (LinkedIn przeładował post lub rozmowę albo karta jest zamknięta).',
     'insert-failed': 'LinkedIn nie przyjął wstawionego tekstu.',
     'tab-unreachable': 'Karta z postem jest zamknięta albo została przeładowana.',
@@ -1105,7 +1405,7 @@ async function insertComment() {
   try {
     await navigator.clipboard.writeText(text);
     setStatus($('insertStatus'), `${reasons[response?.reason] ?? 'Nie udało się wstawić tekstu.'} Komentarz skopiowano: kliknij w pole pod postem i wklej (Ctrl+V).`, 'error');
-    await recordHistory(text);
+    await recordHistory(text, captured);
   } catch {
     setStatus($('insertStatus'), `${reasons[response?.reason] ?? 'Nie udało się wstawić tekstu.'} Skopiuj komentarz ręcznie.`, 'error');
   }
@@ -1292,6 +1592,7 @@ function renderSettingsForm() {
   $('aboutMe').value = s.aboutMe;
   $('autoAnalyze').checked = s.autoAnalyze;
   $('includeImagesDefault').checked = s.includeImages;
+  $('persistDrafts').checked = s.persistDrafts;
   $('learnVoice').checked = s.learnVoice;
   $('useHarmonic').checked = s.useHarmonic;
   $('harmonicApiKey').value = s.harmonicApiKey;
@@ -1341,6 +1642,7 @@ function readSettingsForm() {
     commentLanguage: $('commentLanguage').value,
     autoAnalyze: $('autoAnalyze').checked,
     includeImages: $('includeImagesDefault').checked,
+    persistDrafts: $('persistDrafts').checked,
     learnVoice: $('learnVoice').checked,
     useHarmonic: $('useHarmonic').checked,
     harmonicApiKey: $('harmonicApiKey').value.trim(),
@@ -1357,6 +1659,8 @@ async function saveSettingsForm(event) {
     (next.useHarmonic && !next.harmonicApiKey ? 'włączono Harmonic, ale brakuje klucza API Harmonic.' : null);
   await saveSettings(chrome.storage.local, next);
   state.settings = next;
+  if (!next.persistDrafts) await chrome.runtime.sendMessage({ type: 'lca:draft:clearPersistent' });
+  persistDraft();
   if (problem) {
     setStatus($('settingsStatus'), `Zapisano, ale: ${problem}`, 'error');
     return;
@@ -1438,7 +1742,9 @@ async function applyImport() {
   await saveSettings(chrome.storage.local, settings);
   await chrome.storage.local.set({ history });
   state.settings = settings;
+  if (!settings.persistDrafts) await chrome.runtime.sendMessage({ type: 'lca:draft:clearPersistent' });
   state.history = history;
+  persistDraft();
   hideImportPreview();
   renderSettingsForm();
   // The main view's selects were filled at start; show the imported choices now.
@@ -1449,51 +1755,45 @@ async function applyImport() {
 
 async function testConnection() {
   const candidate = readSettingsForm();
-  const cfg = activeConfig(candidate);
+  const cfg = { ...activeConfig(candidate), effort: 'low', thinking: 'adaptive', showThinking: false };
   const problem = validateConfig(cfg);
-  if (problem) {
-    setStatus($('settingsStatus'), problem, 'error');
-    return;
-  }
+  if (problem) { setStatus($('settingsStatus'), problem, 'error'); return; }
+  const task = ops.start('connection', 'Sprawdzam połączenie…', 'panel');
   setStatus($('settingsStatus'), `Łączę się z: ${cfg.providerLabel}…`);
   try {
-    // Fixed, cheapest request: low effort, thinking parameter not sent.
-    const { text } = await streamCompletion(
-      { ...cfg, effort: 'low', thinking: 'adaptive', showThinking: false },
-      { system: 'Reply with exactly: OK', messages: [{ role: 'user', content: 'ping' }] },
-    );
+    const { text, message } = await streamCompletion(cfg,
+      { system: 'Reply with exactly: OK', messages: [{ role: 'user', content: 'ping' }] }, { signal: task.signal });
+    if (!task.current()) return;
+    addCost(message, cfg, task, costScope());
     setStatus($('settingsStatus'), `Połączenie działa (${modelLabel(cfg.model)} odpowiedział: „${text.trim().slice(0, 40)}”).`, 'ok');
-  } catch (error) {
-    setStatus($('settingsStatus'), describeError(error, cfg) || 'Przerwano.', 'error');
-  }
+  } catch (error) { taskError(error, cfg, task, $('settingsStatus'), testConnection, { independent: true }); }
+  finally { ops.finish(task); }
 }
 
 // --- init -------------------------------------------------------------------
 
 async function expandPost() {
-  const post = state.post;
+  const post = structuredClone(state.post);
   if (!post || post.tabId == null) return;
+  const task = ops.start('expand', 'Rozwijam post…');
   const notice = $('globalNotice');
-  let response = null;
   try {
-    response = await chrome.tabs.sendMessage(
-      post.tabId,
-      { type: 'lca:expand', editorToken: post.editorToken, postKey: post.key },
-      { frameId: post.frameId ?? 0 },
-    );
-  } catch {
-    response = null;
-  }
-  if (!response?.ok || !response.post) {
-    notice.hidden = false;
-    notice.textContent = 'Nie udało się rozwinąć posta: karta z postem jest zamknięta albo została przeładowana. Kliknij ponownie w pole komentarza pod postem.';
-    return;
-  }
-  notice.hidden = true;
-  const changed = response.post.text !== post.text;
-  state.post = { ...post, text: response.post.text, hasSeeMore: response.post.hasSeeMore, imageUrls: response.post.imageUrls };
-  renderPost();
-  if (changed && state.settings.autoAnalyze) runAnalysis();
+    const response = await abortable(chrome.tabs.sendMessage(post.tabId,
+      { type: 'lca:expand', editorToken: post.editorToken, postKey: post.key, expectedTarget: targetIdentity(post) },
+      { frameId: post.frameId ?? 0 }), task.signal);
+    if (!task.current()) return;
+    if (!response?.ok || !response.post) throw new Error('Nie udało się rozwinąć posta. Kliknij ponownie we właściwe pole na LinkedInie.');
+    notice.hidden = true;
+    const changed = response.post.text !== post.text;
+    state.post = { ...state.post, ...response.post };
+    state.sourceRevision = sourceRevision(response.post);
+    state.lastCoverage = ''; state.imageCache.clear();
+    renderPost(); renderMedia(); persistDraft();
+    chrome.storage.session.set({ [`lca:panelContext:${state.windowId}`]: state.post });
+    if (changed && state.settings.autoAnalyze) runAnalysis();
+  } catch (error) {
+    if (task.owns() && !task.signal.aborted) { notice.hidden = false; notice.textContent = error.message || 'Nie udało się rozwinąć posta.'; }
+  } finally { ops.finish(task); }
 }
 
 function bindEvents() {
@@ -1546,14 +1846,13 @@ function bindEvents() {
     chrome.storage.session.remove('boundPost');
     setPost(null);
   });
-  $('includeImages').addEventListener('change', (e) => {
-    state.includeImages = e.target.checked;
-  });
+  $('includeImages').addEventListener('change', (e) => { state.includeImages = e.target.checked; mediaChanged(); });
   $('reanalyze').addEventListener('click', () => {
     const text = cleanPostText($('postTextEdit').value);
     state.post = { ...state.post, text };
+    ops.cancel('comment'); ops.cancel('check');
     renderPost();
-    runAnalysis();
+    runAnalysis({ force: true });
   });
   $('runAnalysis').addEventListener('click', runAnalysis);
   $('writeComment').addEventListener('click', writeComment);
@@ -1565,14 +1864,31 @@ function bindEvents() {
   });
   $('tone').addEventListener('change', () => {
     persistChoice({ tone: $('tone').value });
-    renderRefineHint();
+    renderRefineHint(); persistDraft();
   });
   $('length').addEventListener('change', () => {
     persistChoice({ length: $('length').value });
-    renderRefineHint();
+    renderRefineHint(); persistDraft();
   });
   $('refineForm').addEventListener('submit', refine);
-  $('commentText').addEventListener('input', renderQuality);
+  $('commentText').addEventListener('input', ownTextChanged);
+  $('instruction').addEventListener('input', () => { state.draftDirty = true; persistDraft(); });
+  $('refineInput').addEventListener('input', () => { state.draftDirty = true; persistDraft(); });
+  $('refreshBackTranslation').addEventListener('click', refreshBackTranslation);
+  $('attachmentFiles').addEventListener('change', addAttachments);
+  $('chooseAttachments').addEventListener('click', () => $('attachmentFiles').click());
+  $('undoRevision').addEventListener('click', () => {
+    let index = state.versions.findIndex((item) => item.comment === $('commentText').value);
+    if (index < 0) { state.versions = pushVersion(state.versions, currentVersion()); index = state.versions.length - 1; }
+    if (index > 0) selectVersion(index - 1);
+  });
+  $('restoreVersion').addEventListener('click', () => selectVersion(Number($('versionSelect').value)));
+  $('stopOperation').addEventListener('click', () => { clearTimeout(autoAnalysisTimer); state.autoAnalysisPending = false; state.autoAnalysisCancelled = true; ops.cancelAll(); });
+  $('retryOperation').addEventListener('click', () => {
+    const retry = state.retry; state.retry = null; renderOperations();
+    if (retry?.valid()) retry.callback();
+    else { $('globalNotice').hidden = false; $('globalNotice').textContent = 'Tekst lub kontekst się zmienił. Uruchom zadanie ponownie dla bieżącej wersji.'; }
+  });
   $('makeSpecific').addEventListener('click', makeSpecific);
   $('recheck').addEventListener('click', runCheck);
   $('insertComment').addEventListener('click', insertComment);
@@ -1593,45 +1909,43 @@ async function loadLocalDefaults() {
   }
 }
 
+function receiveBoundPost(next) {
+  if (!next || (next.windowId != null && state.windowId != null && next.windowId !== state.windowId)) return;
+  showSettings(false);
+  if (sameTarget(state.post, next) && state.sourceRevision === sourceRevision(next)) {
+    state.post = { ...state.post, tabId: next.tabId, frameId: next.frameId, editorToken: next.editorToken };
+    showPendingPost(null); renderPost(); return;
+  }
+  if (state.post && hasWork()) {
+    showPendingPost(next); return;
+  }
+  setPost(next);
+}
+
 async function init() {
+  new ResizeObserver(([entry]) => {
+    document.documentElement.style.setProperty('--topbar-height', `${entry.target.getBoundingClientRect().height}px`);
+  }).observe(document.querySelector('.topbar'));
+  state.windowId = (await chrome.windows.getCurrent().catch(() => null))?.id ?? null;
   bindEvents();
-  // Settings + optional local defaults (dist/defaults.json, built from the git-ignored
-  // local-config/defaults.json): fills an empty "O mnie" once, never overwrites edits.
   const { settings: stored } = await chrome.storage.local.get('settings');
   const { settings, changed } = applyLocalDefaults(stored, await loadLocalDefaults());
   state.settings = settings;
   if (changed) await saveSettings(chrome.storage.local, settings);
   fillSelect($('tone'), TONES, state.settings.tone);
   fillSelect($('length'), LENGTHS, state.settings.length);
-
   state.history = (await chrome.storage.local.get('history')).history ?? [];
-  const { boundPost } = await chrome.storage.session.get('boundPost');
-  setPost(boundPost ?? null);
-
-  // Alt+Shift+T: the request may already be waiting (panel opened by the command)
-  // or arrive while the panel is open.
-  chrome.storage.session.onChanged.addListener((changes) => handleTranslateRequest(changes.translateRequest?.newValue));
-  handleTranslateRequest((await chrome.storage.session.get('translateRequest')).translateRequest);
-
   chrome.storage.session.onChanged.addListener((changes) => {
-    const next = changes.boundPost?.newValue;
-    if (!next) return;
-    showSettings(false);
-    if (state.post && !state.post.manual && next.key === state.post.key) {
-      // Same post focused again: keep translation, draft and result; just update the target editor.
-      state.post = { ...state.post, tabId: next.tabId, frameId: next.frameId, editorToken: next.editorToken };
-      showPendingPost(null);
-      renderPost();
-      return;
-    }
-    if (state.post && hasWork()) {
-      // Never drop the user's work because they clicked another comment box.
-      showPendingPost(next);
-      return;
-    }
-    setPost(next);
+    handleTranslateRequest(changes.translateRequest?.newValue);
+    if (changes.boundPost?.newValue) receiveBoundPost(changes.boundPost.newValue);
   });
-
+  const key = `lca:panelContext:${state.windowId}`;
+  const data = await chrome.storage.session.get([key, 'boundPost', 'translateRequest']);
+  const remembered = data[key];
+  const bound = data.boundPost;
+  const initial = remembered || (bound && (bound.windowId == null || bound.windowId === state.windowId) ? bound : null);
+  setPost(initial);
+  handleTranslateRequest(data.translateRequest);
   if (validateConfig(config())) showSettings(true, { intro: true });
 }
 

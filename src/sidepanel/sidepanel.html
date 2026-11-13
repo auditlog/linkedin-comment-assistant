@@ -13,6 +13,11 @@
     <button type="button" id="historyToggle" class="secondary small" aria-label="Historia" aria-expanded="false" title="Wstawione i skopiowane teksty">Historia</button>
     <button type="button" id="settingsToggle" class="icon-button" aria-label="Ustawienia" aria-expanded="false" title="Ustawienia">⚙</button>
   </header>
+  <div id="operationBar" class="operation-bar" hidden>
+    <span id="operationStatus" role="status" aria-live="polite"></span>
+    <button type="button" id="stopOperation" class="secondary small">Przerwij</button>
+    <button type="button" id="retryOperation" class="secondary small" hidden>Ponów</button>
+  </div>
 
   <!-- Main view -->
   <main id="mainView">
@@ -30,6 +35,7 @@
     </section>
 
     <p id="globalNotice" class="notice" hidden></p>
+    <p id="draftStatus" class="status" role="status" aria-live="polite"></p>
 
     <!-- Step 1: post -->
     <section id="postSection" class="step" aria-labelledby="postHeading">
@@ -78,6 +84,17 @@
           <button type="button" id="clearPost" class="link" data-label="clear">Wybierz inny post</button>
         </div>
       </div>
+      <details id="mediaDetails" class="media-details">
+        <summary>Dokument, ankieta lub własne obrazy</summary>
+        <p id="mediaCoverage" class="muted small-text"></p>
+        <div id="documentPages"></div>
+        <label for="attachmentFiles">Dodaj slajdy lub zrzuty (do 6 obrazów, po 3,5 MB)</label>
+        <button type="button" id="chooseAttachments" class="secondary small">Dodaj obrazy</button>
+        <input type="file" id="attachmentFiles" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+        <p class="muted small-text">Obrazy trafią do modelu przy analizie lub pisaniu. Nie są zapisywane w szkicach ani historii.</p>
+        <ul id="attachmentList" class="attachment-list"></ul>
+        <p id="attachmentStatus" class="status" role="status" aria-live="polite"></p>
+      </details>
     </section>
 
     <!-- Step 2: understand -->
@@ -121,6 +138,8 @@
 
       <h3>Po polsku</h3>
       <p id="backTranslation" class="back-translation"></p>
+      <p id="backTranslationStatus" class="status warn" role="status" hidden>Tłumaczenie dotyczy poprzedniej wersji tekstu.</p>
+      <button type="button" id="refreshBackTranslation" class="secondary small" hidden>Odśwież tłumaczenie</button>
       <details id="resultReasoning" class="thinking" hidden><summary>Jak myślał model</summary><p id="resultReasoningText"></p></details>
 
       <div id="notesWrap" hidden>
@@ -151,9 +170,24 @@
         </div>
         <p id="refineHint" class="refine-hint" hidden>Zmieniono ton lub długość. Kliknij „Popraw”, żeby przepisać tekst według nowych ustawień (pole może zostać puste).</p>
       </form>
+      <div id="versionControls" class="version-controls" hidden>
+        <button type="button" id="undoRevision" class="secondary small">Cofnij poprawkę</button>
+        <label for="versionSelect">Wersje szkicu</label>
+        <div class="row">
+          <select id="versionSelect"></select>
+          <button type="button" id="restoreVersion" class="secondary small">Przywróć</button>
+        </div>
+      </div>
     </section>
 
-    <footer id="costLine" class="cost" aria-live="polite"></footer>
+    <footer class="cost">
+      <p id="costLine" aria-live="polite"></p>
+      <details id="costDetails" hidden>
+        <summary>Koszt i czas poszczególnych zadań</summary>
+        <ul id="costList"></ul>
+        <p class="muted small-text">Przerwane lub nieudane zapytania mogą być płatne, nawet gdy API nie zwróciło zużycia tokenów.</p>
+      </details>
+    </footer>
   </main>
 
   <!-- History view -->
@@ -221,6 +255,12 @@
 
     <label class="check"><input type="checkbox" id="autoAnalyze"> Od razu tłumacz post i podsuwaj pomysły</label>
     <label class="check"><input type="checkbox" id="includeImagesDefault"> Domyślnie uwzględniaj grafikę z posta</label>
+    <fieldset class="drafts">
+      <legend>Szkice</legend>
+      <p class="muted small-text">Własne szkice i ostatnie 8 wersji są odzyskiwane w bieżącej sesji przeglądarki (do 20 szkiców).</p>
+      <label class="check"><input type="checkbox" id="persistDrafts"> Przechowuj własne szkice także po ponownym uruchomieniu przeglądarki, do 7 dni</label>
+      <p class="muted small-text">Zapis obejmuje Twoje polecenia i odpowiedzi, bez transkrypcji rozmówcy i załączników. Wyłączenie usuwa trwałe kopie szkiców. Bieżący post lub rozmowę wskaż ponownie na LinkedInie.</p>
+    </fieldset>
 
     <fieldset class="voice">
       <legend>Twój styl</legend>

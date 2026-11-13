@@ -3,7 +3,7 @@
 // is free, needs no API key and no LinkedIn login.
 // Run: npm run test:e2e
 
-import { test, before, after } from 'node:test';
+import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, writeFile, mkdtemp, rm, cp } from 'node:fs/promises';
 import os from 'node:os';
@@ -140,7 +140,11 @@ async function mockApi(route) {
   }
   const userText = lastUserText(body);
   let reply = 'OK';
-  if (userText.includes('<task>translate_comments</task>')) {
+  if (userText.includes('<task>back_translate</task>')) {
+    reply = '<back_translation>Nie mogę przyjechać, ale życzę udanego wydarzenia.</back_translation>';
+  } else if (userText.includes('<feedback>') || userText.includes('changed the settings')) {
+    reply = REFINED_REPLY;
+  } else if (userText.includes('<task>translate_comments</task>')) {
     reply = TRANSLATE_COMMENTS_REPLY;
   } else if (userText.includes('<task>translate_text</task>')) {
     // Slow enough for a test to switch posts while the translation is still running.
@@ -175,6 +179,7 @@ before(async () => {
     args: [`--disable-extensions-except=${extensionDir}`, `--load-extension=${extensionDir}`],
   });
   const fixture = await readFile(path.join(here, 'fixtures', 'feed.html'), 'utf8');
+  const mediaFixture = await readFile(path.join(here, 'fixtures', 'media.html'), 'utf8');
   const messagingFixture = await readFile(path.join(here, 'fixtures', 'messaging.html'), 'utf8');
   const shadowChatFixture = await readFile(path.join(here, 'fixtures', 'messaging-shadow.html'), 'utf8');
   // LinkedIn 2026-11: the messaging UI runs in an iframe inside the page shell.
@@ -183,7 +188,8 @@ before(async () => {
   await context.route('https://www.linkedin.com/**', (route) => {
     const pathname = new URL(route.request().url()).pathname;
     let body = fixture;
-    if (pathname.startsWith('/messaging/iframe-shell/')) body = iframeShell;
+    if (pathname.startsWith('/feed/media/')) body = mediaFixture;
+    else if (pathname.startsWith('/messaging/iframe-shell/')) body = iframeShell;
     else if (pathname.startsWith('/feed/shadow-chat/')) body = shadowChatFixture;
     else if (pathname.startsWith('/messaging/') || pathname.startsWith('/messaging-frame/')) body = messagingFixture;
     return route.fulfill({ status: 200, contentType: 'text/html', body });
@@ -202,6 +208,16 @@ before(async () => {
   );
 });
 
+beforeEach(async () => {
+  // Isolate newly introduced draft storage, while preserving each legacy test's setup.
+  await serviceWorker.evaluate(async () => {
+    for (const area of [chrome.storage.session, chrome.storage.local]) {
+      const data = await area.get(null);
+      await area.remove(Object.keys(data).filter((key) => key.startsWith('lca:')));
+    }
+  });
+});
+
 after(async () => {
   await context?.close();
   if (userDataDir) await rm(userDataDir, { recursive: true, force: true });
@@ -211,7 +227,10 @@ after(async () => {
 // Optional screenshots for visual review: LCA_SCREENSHOTS=/some/dir npm run test:e2e
 async function snap(page, name) {
   const dir = process.env.LCA_SCREENSHOTS;
-  if (dir) await page.screenshot({ path: path.join(dir, `${name}.png`), fullPage: true });
+  if (dir) {
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    await page.screenshot({ path: path.join(dir, `${name}.png`), fullPage: true });
+  }
 }
 
 async function boundPost() {
@@ -314,7 +333,7 @@ test('full flow: bind post, analyze, write, refine, insert', async () => {
     const el = document.getElementById('commentText');
     return !el.readOnly && el.value === 'Good luck in Utrecht, see you at the booth!';
   });
-  await panel.locator('#qualityStatus', { hasText: 'Komentarz jest konkretny' }).waitFor({ timeout: 10000 });
+  await panel.locator('#qualityStatus', { hasText: 'Model nie wykrył problemów w komentarzu' }).waitFor({ timeout: 10000 });
   const refineReq = apiRequests.find((r) => lastUserText(r.body).includes('<feedback>'));
   assert.match(lastUserText(refineReq.body), /Komentarz ma problemy:\n- Komentarz powtarza informacje z posta o targach\./);
   assert.equal(refineReq.body.messages.length, 3);
@@ -598,7 +617,7 @@ test('messaging: reply in a conversation, inserted with line breaks and never se
   assert.equal(await panel.locator('#insertComment').textContent(), 'Wstaw do wiadomości');
   const writeReq = apiRequests.findLast((r) => lastUserText(r.body).includes('<task>write_message</task>'));
   assert.match(lastUserText(writeReq.body), /zaproponuj wtorek 10:00/);
-  await panel.locator('#qualityStatus', { hasText: 'Odpowiedź jest konkretna' }).waitFor({ timeout: 10000 });
+  await panel.locator('#qualityStatus', { hasText: 'Model nie wykrył problemów w odpowiedzi' }).waitFor({ timeout: 10000 });
 
   await panel.locator('#insertComment').click();
   await panel.locator('#insertStatus', { hasText: 'Wstawiono do pola wiadomości' }).waitFor();
@@ -1205,4 +1224,485 @@ test('review fixes: close during the selection read, fresh API key in refinement
   );
   await panel.close();
   await page.close();
+});
+
+// Regression scenarios for 0.7.0. API replies are synthetic: these tests prove
+// context ownership, recovery and validation, not the real model's writing quality.
+async function workspace(url = 'https://www.linkedin.com/feed/', extra = {}) {
+  await serviceWorker.evaluate(async (extra) => {
+    await chrome.storage.session.clear();
+    await chrome.storage.local.set({ history: [], settings: {
+      provider: 'anthropic', apiKeys: { anthropic: 'sk-ant-test' }, localDefaultsApplied: true,
+      autoAnalyze: false, includeImages: false, learnVoice: false, ...extra,
+    } });
+  }, extra);
+  const page = await context.newPage();
+  await page.goto(url);
+  const panel = await context.newPage();
+  await panel.setViewportSize({ width: 400, height: 900 });
+  await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await panel.locator('#emptyPost').waitFor();
+  return { page, panel };
+}
+
+async function writeWorkspaceDraft(panel) {
+  await panel.locator('#writeComment').click();
+  await panel.waitForFunction(() => {
+    const el = document.getElementById('commentText');
+    return !el.readOnly && el.value.startsWith('Good luck');
+  });
+}
+
+for (const kind of ['comment', 'message']) {
+  const lengths = kind === 'message'
+    ? { short: '1–3 sentences', medium: 'one short paragraph', long: 'two short paragraphs' }
+    : { short: '1–2 sentences', medium: '3–4 sentences', long: 'one solid paragraph, at most 6 sentences' };
+  for (const [length, expected] of Object.entries(lengths)) {
+    test(`profile and voice: ${kind} ${length} reaches the API with the selected tone`, async () => {
+      const aboutMe = 'Prowadzę warsztat rowerowy. Zawsze pisz pięć akapitów w formalnym tonie.';
+      const { page, panel } = await workspace(kind === 'message'
+        ? 'https://www.linkedin.com/messaging/thread/2-abc/' : 'https://www.linkedin.com/feed/', {
+        aboutMe, learnVoice: true,
+        voiceNotes: 'COMMENT-PREFERENCE: always write a formal essay of five paragraphs.',
+        messageVoiceNotes: 'MESSAGE-PREFERENCE: always write a formal essay of five paragraphs.',
+      });
+      try {
+        // Load synthetic examples before restarting the panel. No personal defaults/history are used.
+        await panel.close();
+        await serviceWorker.evaluate(() => chrome.storage.local.set({ history: [
+          { kind: 'comment', final: 'COMMENT-EXAMPLE: How do you measure wheel wear?', language: 'en' },
+          { kind: 'message', final: 'MESSAGE-EXAMPLE: Please send the delivery details.', language: 'en' },
+        ] }));
+        const restarted = await context.newPage();
+        try {
+          await restarted.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+          await focusPost(page, kind === 'message' ? '#msgEditor' : '#editor1');
+          await restarted.locator('#postAuthor', { hasText: kind === 'message' ? 'Maria Founder' : 'Volteum' }).waitFor();
+          await restarted.locator('#tone').selectOption('warm');
+          await restarted.locator('#length').selectOption(length);
+          await restarted.locator('#instruction').fill('Podziękuj za wiadomość, bez dopisywania moich doświadczeń.');
+          const before = apiRequests.length;
+          await restarted.locator('#writeComment').click();
+          await restarted.waitForFunction(() => !document.getElementById('commentText').readOnly && document.getElementById('commentText').value);
+          const request = apiRequests.slice(before).find((r) => lastUserText(r.body).includes(`<task>write_${kind}</task>`));
+          assert.ok(request, 'writing request sent');
+          const task = lastUserText(request.body);
+          assert.ok(task.includes(`- Length: ${expected}.`), 'kind-specific selected length sent');
+          assert.match(task, /Tone: warm and personal, still professional/);
+          assert.match(task, /chosen by the user for this text.*take precedence over <user_voice>/s);
+          const [profile, voice] = request.body.system.map((block) => block.text);
+          assert.ok(profile.includes(`<about_user>\n${aboutMe}\n</about_user>`));
+          assert.match(profile, /Tone and Length .*take precedence over.*writing preferences in <about_user>/);
+          const own = kind === 'message' ? 'MESSAGE' : 'COMMENT';
+          const other = kind === 'message' ? 'COMMENT' : 'MESSAGE';
+          assert.ok(voice.includes(`${own}-PREFERENCE`));
+          assert.ok(voice.includes(`${own}-EXAMPLE`));
+          assert.ok(!voice.includes(`${other}-PREFERENCE`) && !voice.includes(`${other}-EXAMPLE`), 'voice memory is isolated by kind');
+          assert.match(voice, /Tone and Length set in the task override/);
+          assert.match(voice, /Never.*reuse facts from these examples/);
+        } finally { await restarted.close(); }
+      } finally { await panel.close(); await page.close(); }
+    });
+  }
+}
+
+test('saved profile and voice updates apply to the next revision while API settings stay frozen', async () => {
+  const { page, panel } = await workspace('https://www.linkedin.com/feed/', {
+    aboutMe: 'OLD-PROFILE: prowadzę warsztat rowerowy.',
+    voiceNotes: 'OLD-VOICE: use plain words.', effort: 'low', thinking: 'adaptive',
+  });
+  try {
+    await focusPost(page, '#editor1');
+    await panel.locator('#postAuthor', { hasText: 'Volteum' }).waitFor();
+    const beforeWrite = apiRequests.length;
+    await writeWorkspaceDraft(panel);
+    const original = apiRequests.slice(beforeWrite).find((r) => lastUserText(r.body).includes('<task>write_comment</task>'));
+    assert.ok(original.body.system[0].text.includes('OLD-PROFILE'));
+    assert.deepEqual(original.body.output_config, { effort: 'low' });
+    await panel.locator('#settingsToggle').click();
+    await panel.locator('#aboutMe').fill('NEW-PROFILE: naprawiam rowery elektryczne.');
+    await panel.locator('#voiceNotes').fill('NEW-VOICE: avoid rhetorical questions.');
+    await panel.locator('#effort').selectOption('high');
+    await panel.locator('#settingsView button[type="submit"]').click();
+    await panel.locator('#mainView').waitFor({ state: 'visible' });
+    assert.equal(await serviceWorker.evaluate(async () => (await chrome.storage.local.get('settings')).settings.effort), 'high');
+    await panel.locator('#length').selectOption('medium');
+    await panel.locator('#tone').selectOption('casual');
+    await panel.locator('#refineInput').fill('Użyj aktualnego opisu i stylu.');
+    const beforeRevision = apiRequests.length;
+    await panel.locator('#refineForm button[type="submit"]').click();
+    await panel.waitForFunction(() => !document.getElementById('commentText').readOnly && document.getElementById('commentText').value.includes('see you at the booth'));
+    const revision = apiRequests.slice(beforeRevision).find((r) => lastUserText(r.body).includes('<feedback>'));
+    assert.ok(revision, 'revision sent');
+    const system = revision.body.system.map((block) => block.text).join('\n');
+    assert.match(system, /NEW-PROFILE/);
+    assert.match(system, /NEW-VOICE/);
+    assert.doesNotMatch(system, /OLD-PROFILE|OLD-VOICE/);
+    assert.match(lastUserText(revision.body), /Length: 3–4 sentences/);
+    assert.match(lastUserText(revision.body), /Tone: relaxed and conversational/);
+    assert.equal(revision.body.model, original.body.model);
+    assert.deepEqual(revision.body.output_config, original.body.output_config);
+    assert.deepEqual(revision.body.thinking, original.body.thinking);
+    assert.ok(revision.body.messages[1].content.some((block) => block.type === 'thinking' && block.signature === 'sig-test'));
+  } finally { await panel.close(); await page.close(); }
+});
+
+test('a restored message draft uses the current profile, message voice and new length', async () => {
+  const { page, panel } = await workspace('https://www.linkedin.com/messaging/thread/2-abc/', {
+    aboutMe: 'OLD-DM-PROFILE: prowadzę warsztat.',
+    voiceNotes: 'COMMENT-ONLY: use formal prose.', messageVoiceNotes: 'OLD-DM-VOICE: use plain words.',
+  });
+  let reopened;
+  try {
+    await focusPost(page, '#msgEditor');
+    await panel.locator('#postAuthor', { hasText: 'Maria Founder' }).waitFor();
+    await panel.locator('#writeComment').click();
+    await panel.waitForFunction(() => !document.getElementById('commentText').readOnly && document.getElementById('commentText').value.startsWith('Hi Maria'));
+    await panel.locator('#commentText').fill('My own restored message draft.');
+    await panel.locator('#settingsToggle').click();
+    await panel.locator('#aboutMe').fill('CURRENT-DM-PROFILE: naprawiam rowery elektryczne.');
+    await panel.locator('#messageVoiceNotes').fill('CURRENT-DM-VOICE: address the recipient by first name.');
+    await panel.locator('#settingsView button[type="submit"]').click();
+    await panel.locator('#mainView').waitFor({ state: 'visible' });
+    await panel.close();
+    reopened = await context.newPage();
+    await reopened.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+    await reopened.locator('#draftStatus', { hasText: 'Przywrócono Twój szkic' }).waitFor();
+    assert.equal(await reopened.locator('#commentText').inputValue(), 'My own restored message draft.');
+    await reopened.locator('#length').selectOption('long');
+    await reopened.locator('#tone').selectOption('warm');
+    const before = apiRequests.length;
+    await reopened.locator('#refineForm button[type="submit"]').click();
+    await reopened.waitForFunction(() => !document.getElementById('commentText').readOnly && document.getElementById('commentText').value.includes('see you at the booth'));
+    const request = apiRequests.slice(before).find((r) => lastUserText(r.body).includes('My own restored message draft.'));
+    assert.ok(request, 'fresh revision sent with restored text');
+    assert.equal(request.body.messages.length, 1, 'no restored API conversation');
+    assert.match(lastUserText(request.body), /<task>write_message<\/task>/);
+    assert.match(lastUserText(request.body), /Length: two short paragraphs/);
+    assert.match(lastUserText(request.body), /Tone: warm and personal/);
+    const system = request.body.system.map((block) => block.text).join('\n');
+    assert.match(system, /CURRENT-DM-PROFILE/);
+    assert.match(system, /CURRENT-DM-VOICE/);
+    assert.doesNotMatch(system, /OLD-DM-PROFILE|OLD-DM-VOICE|COMMENT-ONLY/);
+  } finally { await reopened?.close(); await panel.close(); await page.close(); }
+});
+
+test('same post: switching to a reply updates its context and the exact insertion target', async () => {
+  const { page, panel } = await workspace();
+  await focusPost(page, '#editor1');
+  await panel.locator('#postAuthor', { hasText: 'Volteum' }).waitFor();
+  await focusPost(page, '#replyEditor');
+  await panel.locator('#postReplyTo', { hasText: 'Anna Nowak' }).waitFor();
+  await writeWorkspaceDraft(panel);
+  const req = apiRequests.filter((r) => lastUserText(r.body).includes('<task>write_comment</task>')).at(-1);
+  assert.match(lastUserText(req.body), /<reply_to author="Anna Nowak">/);
+  // Re-render the editor to exercise the fallback: never choose the main editor.
+  await page.locator('#replyEditor').evaluate((el) => el.replaceWith(el.cloneNode(true)));
+  await panel.locator('#insertComment').click();
+  await panel.locator('#insertStatus', { hasText: 'Wstawiono' }).waitFor();
+  assert.match(await page.locator('#replyEditor').innerText(), /Good luck/);
+  assert.equal(await page.locator('#editor1').innerText(), '');
+  await panel.close(); await page.close();
+});
+
+test('same conversation refreshes new messages, protects work and rejects insertion into stale context', async () => {
+  const { page, panel } = await workspace('https://www.linkedin.com/messaging/thread/2-abc/');
+  await focusPost(page, '#msgEditor');
+  await panel.locator('#postExcerpt', { hasText: 'Tuesday' }).waitFor();
+  await page.locator('.msg-thread .msg-s-event-listitem__body').last().evaluate((el) => el.textContent = 'Actually, Thursday instead.');
+  await page.locator('#msgEditor').blur();
+  await focusPost(page, '#msgEditor');
+  await panel.locator('#postExcerpt', { hasText: 'Thursday' }).waitFor();
+  await panel.locator('#writeComment').click();
+  await panel.waitForFunction(() => !document.getElementById('commentText').readOnly && document.getElementById('commentText').value.startsWith('Hi Maria'));
+  await page.locator('.msg-thread .msg-s-event-listitem__body').last().evaluate((el) => el.textContent = 'Now please use Friday.');
+  await panel.locator('#insertComment').click();
+  await panel.locator('#insertStatus', { hasText: 'Kontekst na LinkedInie zmienił się' }).waitFor();
+  assert.equal(await page.locator('#msgEditor').innerText(), '');
+  assert.deepEqual(await page.evaluate(() => window.__sent), []);
+  await page.locator('#msgEditor').blur();
+  await focusPost(page, '#msgEditor');
+  await panel.locator('#pendingPost').waitFor();
+  assert.match(await panel.locator('#postExcerpt').textContent(), /Thursday/);
+  await panel.close(); await page.close();
+});
+
+test('switching during image preparation cancels the old request without mixing posts or images', async () => {
+  const { page, panel } = await workspace('https://www.linkedin.com/feed/', { includeImages: true });
+  let started;
+  const fetching = new Promise((resolve) => started = resolve);
+  await panel.route('https://media.licdn.com/**', async (route) => {
+    started(); await new Promise((resolve) => setTimeout(resolve, 1200));
+    await route.fulfill({ status: 200, contentType: 'image/png', body: PNG }).catch(() => {});
+  });
+  await focusPost(page, '#editor1');
+  await panel.locator('#postAuthor', { hasText: 'Volteum' }).waitFor();
+  const before = apiRequests.length;
+  await panel.locator('#writeComment').click(); await fetching;
+  assert.equal(await panel.locator('#writeComment').isDisabled(), true, 'locked before image fetching completes');
+  await focusPost(page, '#editor2');
+  await panel.locator('#pendingPost').waitFor();
+  await panel.locator('#switchPost').click();
+  await panel.locator('#postAuthor', { hasText: 'Jan Kowalski' }).waitFor();
+  await panel.waitForTimeout(1400);
+  assert.equal(apiRequests.slice(before).filter((r) => lastUserText(r.body).includes('<task>write_comment</task>')).length, 0);
+  assert.equal(await panel.locator('#commentText').inputValue(), '');
+  assert.equal(await panel.locator('#writeComment').isEnabled(), true);
+  await writeWorkspaceDraft(panel);
+  const req = apiRequests.slice(before).find((r) => lastUserText(r.body).includes('<task>write_comment</task>'));
+  assert.match(lastUserText(req.body), /rekrutujemy analityka/);
+  assert.equal(typeof req.body.messages[0].content, 'string', 'second post has no image from the first');
+  await panel.close(); await page.close();
+});
+
+test('draft survives panel recreation; restored text can be refined without persisting the source thread', async () => {
+  const { page, panel } = await workspace();
+  await focusPost(page, '#editor1');
+  await panel.locator('#postAuthor', { hasText: 'Volteum' }).waitFor();
+  await panel.locator('#instruction').fill('Mój własny szkic.');
+  await writeWorkspaceDraft(panel);
+  await panel.locator('#commentText').fill('My own edited draft before copying.');
+  await panel.locator('#refineInput').fill('Skróć mój tekst.');
+  await panel.close();
+  const reopened = await context.newPage();
+  await reopened.setViewportSize({ width: 400, height: 900 });
+  await reopened.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await reopened.locator('#draftStatus', { hasText: 'Przywrócono Twój szkic' }).waitFor();
+  assert.equal(await reopened.locator('#instruction').inputValue(), 'Mój własny szkic.');
+  assert.equal(await reopened.locator('#commentText').inputValue(), 'My own edited draft before copying.');
+  assert.equal(await reopened.locator('#refineInput').inputValue(), 'Skróć mój tekst.');
+  const before = apiRequests.length;
+  await reopened.locator('#refineForm button[type="submit"]').click();
+  await reopened.waitForFunction(() => !document.getElementById('commentText').readOnly && document.getElementById('commentText').value.includes('see you at the booth'));
+  const req = apiRequests.slice(before).find((r) => lastUserText(r.body).includes('My own edited draft'));
+  assert.ok(req, 'fresh request includes the restored own text');
+  assert.equal(req.body.messages.length, 1, 'no persisted API thinking/signatures or source transcript');
+  assert.doesNotMatch(lastUserText(req.body), /‹feedback›/, 'a rebuilt thread preserves the real refinement protocol');
+  await reopened.locator('#undoRevision').click();
+  assert.equal(await reopened.locator('#commentText').inputValue(), 'My own edited draft before copying.');
+  await reopened.locator('#undoRevision').click();
+  assert.match(await reopened.locator('#commentText').inputValue(), /^Good luck in Utrecht! Which/);
+  assert.equal(await reopened.locator('#undoRevision').isDisabled(), true, 'undo walks backwards rather than toggling two versions');
+  await snap(reopened, '7-recovered-draft');
+  const local = await serviceWorker.evaluate(async () => chrome.storage.local.get(null));
+  assert.equal(Object.keys(local).filter((key) => key.startsWith('lca:draft:')).length, 0, 'durable draft retention is opt-in');
+  await reopened.close(); await page.close();
+});
+
+test('failed refinement keeps manual edits and feedback; stale back-translation refreshes explicitly', async () => {
+  const { page, panel } = await workspace();
+  await panel.route('https://api.anthropic.com/**', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    if (lastUserText(body).includes('<feedback>')) return route.fulfill({ status: 401, contentType: 'application/json',
+      body: JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'test failure' } }) });
+    return mockApi(route);
+  });
+  await focusPost(page, '#editor1');
+  await panel.locator('#postAuthor', { hasText: 'Volteum' }).waitFor();
+  await writeWorkspaceDraft(panel);
+  const own = 'I cannot attend, but wish you a successful event.';
+  await panel.locator('#commentText').fill(own);
+  await panel.locator('#backTranslationStatus', { hasText: 'poprzedniej wersji' }).waitFor();
+  await panel.locator('#refreshBackTranslation').click();
+  await panel.locator('#backTranslation', { hasText: 'Nie mogę przyjechać' }).waitFor();
+  assert.equal(await panel.locator('#backTranslationStatus').isHidden(), true);
+  await panel.locator('#refineInput').fill('Skróć, zachowaj odmowę.');
+  await panel.locator('#refineForm button[type="submit"]').click();
+  await panel.locator('#resultStatus', { hasText: '401' }).waitFor();
+  assert.equal(await panel.locator('#commentText').inputValue(), own);
+  assert.equal(await panel.locator('#refineInput').inputValue(), 'Skróć, zachowaj odmowę.');
+  assert.match(await panel.locator('#backTranslation').textContent(), /Nie mogę przyjechać/);
+  await snap(panel, '8-preserved-after-error');
+  await panel.close(); await page.close();
+});
+
+test('invalid or truncated quality output never turns into a green success', async () => {
+  const { page, panel } = await workspace();
+  await panel.route('https://api.anthropic.com/**', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    if (lastUserText(body).includes('<task>check_comment</task>')) return route.fulfill({ status: 200,
+      headers: { 'content-type': 'text/event-stream' }, body: sseBody('No tags, no actual check.', body.model) });
+    return mockApi(route);
+  });
+  await focusPost(page, '#editor1');
+  await panel.locator('#postAuthor', { hasText: 'Volteum' }).waitFor();
+  await writeWorkspaceDraft(panel);
+  await panel.locator('#qualityStatus', { hasText: 'nieprawidłowy wynik kontroli' }).waitFor();
+  assert.equal(await panel.locator('#qualityStatus').evaluate((el) => el.classList.contains('ok')), false);
+  assert.equal(await panel.locator('#recheck').isVisible(), true);
+  assert.equal(await panel.locator('#insertComment').isEnabled(), true, 'quality remains advisory');
+  await panel.close(); await page.close();
+});
+
+test('Przerwij preserves the last own version and prevents late streaming updates', async () => {
+  const { page, panel } = await workspace();
+  let began;
+  const pending = new Promise((resolve) => began = resolve);
+  await panel.route('https://api.anthropic.com/**', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    if (lastUserText(body).includes('<feedback>')) {
+      began(); await new Promise((resolve) => setTimeout(resolve, 1200));
+    }
+    return mockApi(route).catch(() => {});
+  });
+  await focusPost(page, '#editor1');
+  await panel.locator('#postAuthor', { hasText: 'Volteum' }).waitFor();
+  await writeWorkspaceDraft(panel);
+  await panel.locator('#commentText').fill('Preserve this own version.');
+  await panel.locator('#refineInput').fill('Skróć.');
+  await panel.locator('#refineForm button[type="submit"]').click(); await pending;
+  await panel.locator('#stopOperation').click();
+  await panel.locator('#resultStatus', { hasText: 'Przerwano' }).waitFor();
+  await panel.waitForTimeout(1400);
+  assert.equal(await panel.locator('#commentText').inputValue(), 'Preserve this own version.');
+  assert.equal(await panel.locator('#refineInput').inputValue(), 'Skróć.');
+  assert.equal(await panel.locator('#commentText').isEditable(), true);
+  assert.equal(await panel.locator('#retryOperation').isVisible(), true);
+  await panel.close(); await page.close();
+});
+
+test('cost uses the actual per-request model, including a refinement with frozen settings', async () => {
+  const { page, panel } = await workspace();
+  await focusPost(page, '#editor1');
+  await panel.locator('#postAuthor', { hasText: 'Volteum' }).waitFor();
+  const before = apiRequests.length;
+  await writeWorkspaceDraft(panel);
+  await panel.locator('#qualityStatus', { hasText: 'Zanim wstawisz' }).waitFor();
+  await panel.locator('#settingsToggle').click();
+  await panel.locator('#modelSelect').selectOption('claude-opus-5-5');
+  await panel.locator('#settingsView button[type="submit"]').click();
+  await panel.locator('#mainView').waitFor({ state: 'visible' });
+  await panel.locator('#refineInput').fill('Krócej');
+  await panel.locator('#refineForm button[type="submit"]').click();
+  await panel.locator('#qualityStatus', { hasText: 'Model nie wykrył' }).waitFor();
+  assert.deepEqual(apiRequests.slice(before).map((r) => r.body.model), [
+    'claude-sonnet-5-5', 'claude-sonnet-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5',
+  ]);
+  assert.match(await panel.locator('#costLine').textContent(), /~3,5 c/);
+  await panel.locator('#costDetails summary').click();
+  assert.equal(await panel.locator('#costList li').count(), 4);
+  await snap(panel, '9-costs');
+  await panel.close(); await page.close();
+});
+
+test('document pages and manual slides have bounded, explicit coverage; polls remain read-only', async () => {
+  const { page, panel } = await workspace('https://www.linkedin.com/feed/media/', { includeImages: true });
+  const html = await page.evaluate(() => document.body.outerHTML);
+  const doc = await focusPost(page, '#docEditor');
+  assert.equal(doc.media.totalPages, 12);
+  assert.equal(doc.media.pages.length, 3);
+  await panel.locator('#postAuthor', { hasText: 'Roadmap Team' }).waitFor();
+  await panel.locator('#documentPages input').last().uncheck();
+  await panel.locator('#attachmentFiles').setInputFiles({ name: 'manual-slide.png', mimeType: 'image/png', buffer: PNG });
+  await panel.locator('#attachmentStatus', { hasText: 'Dodano obrazy' }).waitFor();
+  const before = apiRequests.length;
+  await panel.locator('#runAnalysis').click();
+  await panel.locator('#translation', { hasText: 'Volteum jedzie' }).waitFor();
+  const req = apiRequests.slice(before).find((r) => lastUserText(r.body).includes('<task>analyze_post</task>'));
+  assert.equal(req.body.messages[0].content.filter((b) => b.type === 'image').length, 3);
+  assert.match(lastUserText(req.body), /<document title="Product roadmap" total_pages="12">/);
+  assert.match(lastUserText(req.body), /Obrazy stron w zapytaniu: 3/);
+  assert.match(await panel.locator('#mediaCoverage').textContent(), /Liczba stron dokumentu: 12/);
+  await snap(panel, '10-document');
+  assert.equal(await page.evaluate(() => document.body.outerHTML), html, 'reading media leaves the page untouched');
+  // Attachments count as work: switching is an explicit action.
+  const poll = await focusPost(page, '#pollEditor');
+  assert.equal(poll.media.options.length, 2);
+  await panel.locator('#switchPost').click();
+  await panel.locator('#postAuthor', { hasText: 'Research Team' }).waitFor();
+  await panel.locator('#runAnalysis').click();
+  await panel.locator('#translation', { hasText: 'Volteum jedzie' }).waitFor();
+  const pollReq = apiRequests.filter((r) => lastUserText(r.body).includes('<poll>')).at(-1);
+  assert.match(lastUserText(pollReq.body), /Which metric would you track first/);
+  assert.match(lastUserText(pollReq.body), /Accuracy: 60%/);
+  assert.equal(await page.evaluate(() => document.body.outerHTML), html);
+  await snap(panel, '11-poll');
+  await panel.close(); await page.close();
+});
+
+test('persistent own drafts survive a cleared session, contain no DM transcript and can be disabled', async () => {
+  const { page, panel } = await workspace('https://www.linkedin.com/messaging/thread/2-abc/', { persistDrafts: true });
+  await focusPost(page, '#msgEditor');
+  await panel.locator('#postAuthor', { hasText: 'Maria Founder' }).waitFor();
+  await panel.locator('#instruction').fill('Only my own instruction.');
+  await panel.locator('#writeComment').click();
+  await panel.waitForFunction(() => !document.getElementById('commentText').readOnly && document.getElementById('commentText').value.startsWith('Hi Maria'));
+  await panel.locator('#commentText').fill('Only my own reply.');
+  const readDrafts = () => serviceWorker.evaluate(async () => {
+    const data = await chrome.storage.local.get(null);
+    return Object.fromEntries(Object.entries(data).filter(([key]) => key.startsWith('lca:draft:')));
+  });
+  for (let i = 0; i < 30; i++) {
+    if (JSON.stringify(await readDrafts()).includes('Only my own reply.')) break;
+    await panel.waitForTimeout(50);
+  }
+  const durable = JSON.stringify(await readDrafts());
+  assert.match(durable, /Only my own reply/);
+  assert.doesNotMatch(durable, /seed round|Does Tuesday|fleetco-seed|companyContext|apiKeys|message\.content|sk-ant-test/);
+  await panel.close();
+  await serviceWorker.evaluate(() => chrome.storage.session.clear());
+  await page.locator('#msgEditor').blur();
+  await focusPost(page, '#msgEditor');
+  const reopened = await context.newPage();
+  await reopened.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await reopened.locator('#draftStatus', { hasText: 'Przywrócono Twój szkic' }).waitFor();
+  assert.equal(await reopened.locator('#commentText').inputValue(), 'Only my own reply.');
+  await reopened.locator('#settingsToggle').click();
+  await reopened.locator('#persistDrafts').uncheck();
+  await reopened.locator('#settingsView button[type="submit"]').click();
+  await reopened.locator('#settingsStatus', { hasText: 'Zapisano' }).waitFor();
+  assert.deepEqual(await readDrafts(), {});
+  await reopened.close(); await page.close();
+});
+
+test('follow mode ignores another window and recycled connected editors refuse insertion', async () => {
+  const { page, panel } = await workspace();
+  await focusPost(page, '#editor1');
+  await panel.locator('#postAuthor', { hasText: 'Volteum' }).waitFor();
+  await writeWorkspaceDraft(panel);
+  await serviceWorker.evaluate(async () => chrome.storage.session.set({ boundPost: {
+    key: 'urn:li:activity:999', author: 'Other window', text: 'Different source', windowId: -42,
+  } }));
+  await panel.waitForTimeout(100);
+  assert.equal(await panel.locator('#pendingPost').isHidden(), true);
+  assert.equal(await panel.locator('#postAuthor').textContent(), 'Volteum');
+  await page.locator('#editor1').evaluate((editor) => editor.closest('[data-urn]').setAttribute('data-urn', 'urn:li:activity:999'));
+  await panel.locator('#insertComment').click();
+  await panel.locator('#insertStatus', { hasText: 'Kontekst na LinkedInie zmienił się' }).waitFor();
+  assert.equal(await page.locator('#editor1').innerText(), '');
+  await panel.close(); await page.close();
+});
+
+test('panel fits 320/400 px in both themes and keeps running controls below the header', async () => {
+  const { page, panel } = await workspace();
+  await focusPost(page, '#editor1');
+  await panel.locator('#postAuthor', { hasText: 'Volteum' }).waitFor();
+  await writeWorkspaceDraft(panel);
+  // Show a real retry state to include the operation bar in the layout checks.
+  await panel.route('https://api.anthropic.com/**', (route) => route.fulfill({ status: 401, contentType: 'application/json',
+    body: JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'test failure' } }) }));
+  await panel.locator('#refineInput').fill('Skróć.');
+  await panel.locator('#refineForm button[type="submit"]').click();
+  await panel.locator('#resultStatus', { hasText: '401' }).waitFor();
+  for (const [width, theme] of [[320, 'dark'], [400, 'light']]) {
+    await panel.setViewportSize({ width, height: 900 });
+    await panel.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
+    await panel.locator('#commentText').scrollIntoViewIfNeeded();
+    const bounds = await panel.evaluate(() => ({
+      viewport: innerWidth, width: document.documentElement.scrollWidth,
+      headerBottom: document.querySelector('.topbar').getBoundingClientRect().bottom,
+      barTop: document.getElementById('operationBar').getBoundingClientRect().top,
+    }));
+    assert.ok(bounds.width <= bounds.viewport, `no horizontal overflow at ${width}px`);
+    assert.ok(bounds.barTop >= bounds.headerBottom - 1, 'operation controls do not hide behind a wrapped header');
+    await snap(panel, `12-${width}-${theme}`);
+    await panel.locator('#settingsToggle').click();
+    await panel.locator('#persistDrafts').waitFor();
+    assert.equal(await panel.locator('#persistDrafts').isVisible(), true);
+    const settingsWidth = await panel.evaluate(() => document.documentElement.scrollWidth);
+    assert.ok(settingsWidth <= width, 'settings fit the panel');
+    await snap(panel, `13-settings-${width}-${theme}`);
+    await panel.locator('#settingsToggle').click();
+  }
+  await panel.close(); await page.close();
 });

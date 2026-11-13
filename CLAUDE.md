@@ -75,7 +75,8 @@ Ustawienia leżą w `chrome.storage.local` pod kluczem `settings` (`settings.js`
 
 **Prompty i styl**
 - `src/lib/style-rules.js` to skróty `miodkuj` (PL) i `humanizer` (EN), oba na licencji MIT. Zachowaj atrybucję w nagłówku pliku i w README.
-- Ton i Długość wybrane w panelu mają pierwszeństwo przed `<user_voice>` (przykłady i wyuczone preferencje kształtują słownictwo i rytm). Zmiana tonu lub długości po napisaniu idzie do modelu w kolejnej poprawce (`buildRefineMessage(…, changed)`, `state.writtenWith`).
+- Ton i Długość wybrane w panelu mają pierwszeństwo przed `<user_voice>` oraz wskazówkami pisania w `<about_user>`; fakty z profilu pozostają kontekstem, a przykłady i wyuczone preferencje kształtują słownictwo i rytm. Zmiana tonu lub długości po napisaniu idzie do modelu w kolejnej poprawce (`buildRefineMessage(…, changed)`, `state.writtenWith`).
+- `writingSystem()` przechwytuje aktualne „O mnie” i styl przed pierwszym await każdego pisania/poprawki. Nie zamrażaj ich na całą rozmowę: zapisane zmiany mają działać od następnego zapytania. Zamrożona zostaje wyłącznie konfiguracja API (`state.writeConfig`), z bieżącym kluczem.
 - `<back_translation>` nie podlega polskim regułom stylu, bo ma być dosłowne. Model nie może dopisywać opinii ani faktów spoza polecenia użytkownika i „O mnie”.
 - Prompt systemowy musi być identyczny przy tych samych ustawieniach (cache), więc nie wstawiaj do niego dat ani identyfikatorów.
 - Te zasady sprawdzają testy w `test/unit/*.test.js`. Zmieniaj je razem z promptami.
@@ -91,3 +92,13 @@ Ustawienia leżą w `chrome.storage.local` pod kluczem `settings` (`settings.js`
 - `local-config/` i `dist/` są poza Gitem. Kluczy API nie zapisuj ani w `local-config/`, ani w `dist/`; build je pomija.
 - Eksport kopii zapasowej domyślnie nie zawiera kluczy API (`buildBackup({includeKeys: false})`); klucze tylko po zaznaczeniu „Dołącz klucze API”.
 - Tekst „O mnie” w `local-config/defaults.json` pochodzi z `/mnt/c/code/memory_pjz`. Nie przenoś danych z tamtego projektu do kodu i nie wysyłaj ich do jev ani innych usług zewnętrznych (tak stanowi `AGENTS.md` w `memory_pjz`).
+
+## Uzupełnienie 0.7.0
+
+- `context.js`: `targetIdentity` rozróżnia reply, `sourceRevision` pomija transport i wzbogacenie. `lca:insert` wysyła oczekiwany cel i rewizję źródła; content script sprawdza je od nowa. Nie zastępuj tego samym `isConnected` ani wyszukaniem dowolnego edytora tego samego posta.
+- `operations.js`: `Operations` ma właściciela zadania, `current()` i `owns()`. Po każdym await/zdarzeniu strumienia sprawdzaj aktualność; stare catch/finally nie mogą wyczyścić nowszego zadania. Reset posta usuwa zadania scope `post`, tłumaczenie zaznaczenia ma scope `selection`.
+- Zapytanie pisania zamraża post, obrazy, polecenie, ton/długość, system i konfigurację przed pierwszym await. Poprawka dopisuje pełne `message.content` dopiero po sukcesie. Błąd przywraca także ręcznie edytowany tekst i zachowuje feedback. `addCost` zawsze otrzymuje faktyczną konfigurację i właściciela zadania.
+- `drafts.js`: zapis przez service worker i `lca:draft:*`, 20 rekordów, 8 wersji, budżet 4 MB na obszar, 7 dni. W trwałym szkicu wyłącznie własne teksty i ich tłumaczenia: bez postów, transkrypcji, `conversation`, konfiguracji, kluczy, notes/thinking i obrazów. Trwałość wymaga ustawienia `persistDrafts`. Po odtworzeniu szkicu poprawka buduje nowe zapytanie z aktualnym źródłem.
+- `linkedin-media.js`: konserwatywny odczyt w kontenerze jednego posta. Dokument/ankieta wymagają potwierdzenia na żywym DOM; testy to atrapy. Nie dodawaj automatycznego pobierania PDF, przewijania stron lub uruchamiania wideo. `media.js` ogranicza ręczne obrazy; w prompcie i UI pokazuj faktyczny zakres odczytu i braki.
+- `parseCheckResult` odrzuca niepełny/niespójny protokół, pusty warn i `max_tokens`. Tłumaczenie zwrotne ma przypisaną treść odpowiedzi; po edycji jest nieaktualne aż do jawnego odświeżenia.
+- `npm run eval` jest bezpłatnym opisem zestawu. Płatne próby wymagają `--run` i klucza w środowisku; nie uruchamiaj ich bez odpowiedniego zlecenia. 34 przypadki są syntetyczne, ocena mechaniczna wymaga uzupełnienia oceną semantyczną według rubryk.

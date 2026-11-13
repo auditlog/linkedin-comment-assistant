@@ -9,6 +9,7 @@
 // See also: src/lib/post-text.js (text cleanup), test/e2e/fixtures/ (sample markup).
 
 import { cleanPostText, fallbackPostKey } from '../lib/post-text.js';
+import { extractPostMedia } from './linkedin-media.js';
 
 // Elements that represent a whole post (feed card, detail view, lightbox dialog).
 const POST_CONTAINER_SELECTORS = [
@@ -200,6 +201,8 @@ export function findPostContainer(editor) {
   for (let node = editor.parentElement; node && node !== document.body; node = node.parentElement) {
     if (matchesAny(node, COMMENT_SELECTORS)) continue;
     if (matchesAny(node, POST_CONTAINER_SELECTORS)) {
+      const urn = node.getAttribute('data-urn') || node.getAttribute('data-id') || '';
+      if (/urn:li:(activity|ugcPost|share):/.test(urn)) return node; // also image/document-only posts
       // A generic match (article/dialog) must actually contain post text, not just the editor.
       if (cleanPostText(collectText(node)).length >= 20) return node;
     }
@@ -372,7 +375,8 @@ function readComment(node, editor = null) {
  */
 export function extractReplyTarget(editor, container) {
   const node = findReplyNode(editor, container);
-  return node ? readComment(node, editor) : null;
+  const comment = node ? readComment(node, editor) : null;
+  return comment ? { ...comment, key: node.getAttribute('data-id') || node.getAttribute('data-urn') || null } : null;
 }
 
 /**
@@ -510,12 +514,13 @@ export async function extractPost(editor, { expand = false } = {}) {
     replyTo: extractReplyTarget(editor, container),
     imageUrls: extractImageUrls(container),
     pageUrl: location.href,
-    found: text.length > 0,
+    found: text.length > 0 || extractImageUrls(container).length > 0 || Boolean(extractPostMedia(container)),
     hasSeeMore: findSeeMoreButtons(container).length > 0,
     authorHeadline: extractAuthorHeadline(container),
     authorProfile: extractAuthorProfile(container),
     linkPreview: extractLinkPreview(container),
     existingComments: extractExistingComments(container, editor),
+    media: extractPostMedia(container),
   };
 }
 
@@ -545,7 +550,7 @@ export function insertIntoEditor(editor, text, { lineBreaks = 'paragraph' } = {}
     selection.removeAllRanges();
     selection.addRange(range);
   };
-  const contains = () => normalizeForCompare(editor.innerText || editor.textContent).includes(normalizeForCompare(text).slice(0, 60));
+  const contains = () => normalizeForCompare(editor.innerText || editor.textContent) === normalizeForCompare(text);
 
   selectAll();
   // execCommand is deprecated but still the most reliable way to fire the
