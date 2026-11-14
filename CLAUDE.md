@@ -15,9 +15,11 @@ npm run build && node --test --test-name-pattern="lightbox" test/e2e/extension.t
 LCA_SCREENSHOTS=<katalog> npm run test:e2e   # zrzuty panelu (400 px) do przeglądu UI
 node scripts/make-icons.mjs   # ponowne wygenerowanie ikon w src/icons
 npm version patch --no-git-tag-version       # numer wersji, zasady niżej
+npm run package                            # neutralny ZIP i SHA256SUMS.txt w .cache/releases/vX.Y.Z/
+npm run test:release                       # ZIP, czysty profil i pełne E2E z paczki
 ```
 
-Repozytorium: prywatne `auditlog/linkedin-comment-assistant` na GitHubie, gałąź `main`.
+Repozytorium: publiczne `auditlog/linkedin-comment-assistant` na GitHubie, gałąź `main`. Neutralne paczki dla odbiorców są w GitHub Releases.
 
 Projekt nie ma lintera ani formattera. Skrypty i testy uruchamiające przeglądarkę biorą opcje z `chromiumLaunchOptions()` (`scripts/chromium.mjs`). Ta funkcja wskazuje Chromium pobrany wcześniej do `~/.cache/ms-playwright` albo podany w `CHROMIUM_PATH` i dokłada brakujące w WSL biblioteki NSS z `.cache/chromium-libs`. Samo `chromium.launch()` się nie uruchomi, bo Playwright 1.65 szuka nowszej wersji przeglądarki, a system nie ma bibliotek NSS.
 
@@ -90,6 +92,7 @@ Ustawienia leżą w `chrome.storage.local` pod kluczem `settings` (`settings.js`
 
 **Prywatność**
 - `local-config/` i `dist/` są poza Gitem. Kluczy API nie zapisuj ani w `local-config/`, ani w `dist/`; build je pomija.
+- `npm run build` tworzy osobisty `dist/`. `npm run build:release` nigdy nie czyta `local-config/defaults.json`, tworzy `.cache/release-build/` z pustym `defaults.json` i nie nadpisuje `dist/`. Do GitHub Releases trafiają wyłącznie artefakty z `npm run package`, sprawdzone przez `npm run test:release`. Proces opisuje `AGENTS.md`.
 - Eksport kopii zapasowej domyślnie nie zawiera kluczy API (`buildBackup({includeKeys: false})`); klucze tylko po zaznaczeniu „Dołącz klucze API”.
 - Tekst „O mnie” w `local-config/defaults.json` pochodzi z `/mnt/c/code/memory_pjz`. Nie przenoś danych z tamtego projektu do kodu i nie wysyłaj ich do jev ani innych usług zewnętrznych (tak stanowi `AGENTS.md` w `memory_pjz`).
 

@@ -1,11 +1,14 @@
 {
   "name": "linkedin-comment-assistant",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "description": "Edge/Chromium extension that helps write LinkedIn comments with Claude (PL prompt -> EN comment, post as context)",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
+    "build:release": "node build.mjs --release",
+    "package": "node scripts/package.mjs",
+    "test:release": "node scripts/test-release.mjs",
     "test": "node --test test/unit/*.test.js",
     "test:e2e": "node build.mjs && node --test test/e2e/*.test.js",
     "eval": "node scripts/evaluate.mjs",
@@ -16,6 +19,7 @@
   },
   "devDependencies": {
     "esbuild": "^0.28.2",
+    "fflate": "0.8.3",
     "playwright": "^1.65.0"
   }
 }

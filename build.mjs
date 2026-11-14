@@ -10,8 +10,11 @@ import { sanitizeLocalDefaults } from './src/lib/settings.js';
 // Optional personal, non-secret defaults (e.g. "O mnie"); git-ignored, see README.
 const LOCAL_DEFAULTS_FILE = 'local-config/defaults.json';
 
-const outdir = 'dist';
+// Distribution builds never inspect local-config and never overwrite personal dist/.
+const release = process.argv.includes('--release');
 const watch = process.argv.includes('--watch');
+if (release && watch) throw new Error('Release builds cannot use --watch.');
+const outdir = release ? '.cache/release-build' : 'dist';
 
 const common = {
   bundle: true,
@@ -59,7 +62,7 @@ await cp('src/sidepanel/sidepanel.css', `${outdir}/sidepanel.css`);
 await cp('src/icons', `${outdir}/icons`, { recursive: true });
 
 let localDefaults = {};
-if (existsSync(LOCAL_DEFAULTS_FILE)) {
+if (!release && existsSync(LOCAL_DEFAULTS_FILE)) {
   let raw;
   try {
     raw = JSON.parse(await readFile(LOCAL_DEFAULTS_FILE, 'utf8'));
@@ -74,4 +77,4 @@ if (existsSync(LOCAL_DEFAULTS_FILE)) {
 }
 await writeFile(`${outdir}/defaults.json`, `${JSON.stringify(localDefaults, null, 2)}\n`);
 
-console.log(`Extension built in ${outdir}/${watch ? ' (watching for changes)' : ''}`);
+console.log(`Extension built in ${outdir}/${release ? ' (distribution: empty defaults)' : watch ? ' (watching for changes)' : ''}`);

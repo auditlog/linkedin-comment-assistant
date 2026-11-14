@@ -1,5 +1,7 @@
 # Asystent komentarzy LinkedIn
 
+**[Pobierz gotową wtyczkę (ZIP)](https://github.com/auditlog/linkedin-comment-assistant/releases/latest)** · [Instalacja bez Node.js](#z-zip-bez-nodejs)
+
 Rozszerzenie do Microsoft Edge (działa też w Chrome), które pomaga pisać komentarze na LinkedInie z pomocą Claude. Piszesz po polsku, a wtyczka:
 
 1. **tłumaczy post na polski**, a długi streszcza, i opisuje, co widać na grafice;
@@ -16,7 +18,7 @@ Komentarz zawsze publikujesz Ty, przyciskiem LinkedIna. Model to Claude Sonnet 5
 
 Historia zmian: [`CHANGELOG.md`](CHANGELOG.md). Decyzje projektowe: [`docs/2026-11-09-design.md`](docs/2026-11-09-design.md), od wersji 0.5.0 także [`docs/2026-11-10-design-0.5.md`](docs/2026-11-10-design-0.5.md).
 
-## Stan wersji 0.8.0
+## Stan wersji 0.8.1
 
 | Obszar | Działanie |
 |---|---|
@@ -25,34 +27,47 @@ Historia zmian: [`CHANGELOG.md`](CHANGELOG.md). Decyzje projektowe: [`docs/2026-
 | Szkice | Automatyczny zapis, do 8 wersji, odtworzenie po zamknięciu panelu. Trwały zapis do 7 dni wymaga osobnego włączenia. |
 | Zadania i koszty | „Przerwij”, „Ponów” oraz szczegóły modelu, tokenów, cache i czasu zadania. |
 | Media | Ankiety, dostępne obrazy stron dokumentu i własne zrzuty. Do 6 obrazów na zapytanie; panel pokazuje zakres odczytu. |
+| Dystrybucja | Gotowy ZIP w GitHub Releases, bez prywatnego „O mnie” i kluczy, z sumą SHA-256. |
 
-Pełny przebieg testów wersji 0.8.0 zakończył się wynikiem **107 testów jednostkowych i 40 E2E bez błędów**. Testy przeglądarkowe korzystają z atrap LinkedIna i API. Sprawdzają mechanikę oraz zawartość zapytań, ale nie potwierdzają jakości odpowiedzi rzeczywistego modelu. Odczyt dokumentów i ankiet nadal wymaga sprawdzenia na bieżącym LinkedInie.
+Kontrola wydania obejmuje testy jednostkowe, pierwsze uruchomienie ZIP-a w świeżym profilu oraz **40 E2E uruchamianych na zawartości paczki**. Testy przeglądarkowe korzystają z atrap LinkedIna i API. Sprawdzają mechanikę oraz zawartość zapytań, ale nie potwierdzają jakości odpowiedzi rzeczywistego modelu. Odczyt dokumentów i ankiet nadal wymaga sprawdzenia na bieżącym LinkedInie.
 
 Na skróty: [instalacja](#instalacja), [używanie](#jak-używać), [ton, długość i profil](#ton-długość-i-kontekst-o-tobie), [prywatność](#prywatność-i-bezpieczeństwo), [aktualizacja](#aktualizacja-i-wersje), [testy](#testy).
 
 ## Wymagania
 
 - Microsoft Edge albo Chrome w wersji 116 lub nowszej.
-- Node.js 20 lub nowszy (do budowania i testów).
+- Node.js 20 lub nowszy, jeśli budujesz ze źródeł lub uruchamiasz testy. Instalacja z gotowego ZIP-a go nie wymaga.
 - Klucz API Anthropic albo OpenRouter.
 - Opcjonalnie: klucz API Harmonic (plan z dostępem do API).
 
 ## Instalacja
 
-Kod jest w prywatnym repozytorium [auditlog/linkedin-comment-assistant](https://github.com/auditlog/linkedin-comment-assistant). Na tym komputerze leży w `C:\code\linkedin_plugin` (w WSL: `/mnt/c/code/linkedin_plugin`).
+### Z ZIP, bez Node.js
 
-1. Pobierz kod (na nowym komputerze) i zbuduj rozszerzenie:
+1. Otwórz [najnowszy GitHub Release](https://github.com/auditlog/linkedin-comment-assistant/releases/latest) i w **Assets** pobierz `linkedin-comment-assistant-v0.8.1.zip`. Gotowa paczka jest też [pod tym linkiem](https://github.com/auditlog/linkedin-comment-assistant/releases/download/v0.8.1/linkedin-comment-assistant-v0.8.1.zip). Automatyczny załącznik **Source code (zip)** zawiera źródła, które trzeba samodzielnie zbudować.
+2. Rozpakuj paczkę w stałe miejsce, np. `C:\Narzędzia\asystent-linkedin`. W wybranym folderze ma być bezpośrednio plik `manifest.json`.
+3. Otwórz `edge://extensions` albo `chrome://extensions` i włącz **Tryb dewelopera**.
+4. Kliknij **Załaduj rozpakowane** i wybierz folder z `manifest.json`. Instalujesz rozpakowany katalog; ZIP służy do pobrania i przeniesienia paczki. Nie usuwaj ani nie przenoś tego katalogu po instalacji.
+5. Przypnij ikonę rozszerzenia do paska i odśwież otwarte karty LinkedIna (F5).
+6. Otwórz panel, wpisz własny klucz API i uzupełnij „O mnie” zgodnie z [pierwszym uruchomieniem](#pierwsze-uruchomienie). Paczka ma puste ustawienia domyślne.
+
+Instalację z rozpakowanego folderu opisują też [Microsoft Edge](https://learn.microsoft.com/en-us/microsoft-edge/extensions/getting-started/extension-sideloading) i [Chrome](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world#load-unpacked). Do ZIP-a dołączamy w wydaniu `SHA256SUMS.txt` z sumą kontrolną archiwum.
+
+### Ze źródeł
+
+Kod jest w publicznym repozytorium [auditlog/linkedin-comment-assistant](https://github.com/auditlog/linkedin-comment-assistant).
+
+1. Pobierz kod i zbuduj rozszerzenie:
    ```bash
-   git clone git@github.com:auditlog/linkedin-comment-assistant.git
+   git clone https://github.com/auditlog/linkedin-comment-assistant.git
    cd linkedin-comment-assistant
    npm ci
    npm run build
    ```
    Gotowa wtyczka trafia do folderu `dist/`.
-2. W Edge otwórz `edge://extensions` i włącz **Tryb dewelopera** (przełącznik po lewej).
-3. Kliknij **Załaduj rozpakowane** i wskaż folder `dist` w katalogu projektu, np. `C:\code\linkedin_plugin\dist`. Edge działa w Windows, więc projekt powinien leżeć na dysku Windows (w WSL: `/mnt/c/...`).
-4. Przypnij ikonę do paska: ikona puzzla, a potem oko przy „Asystent komentarzy LinkedIn”.
-5. Odśwież otwarte karty LinkedIna (F5).
+2. Załaduj folder `dist/` tak jak w krokach 3–5 instalacji z ZIP-a. Przy Edge uruchomionym w Windows wskaż katalog dostępny z Windows, np. `C:\code\linkedin-comment-assistant\dist`.
+
+`dist/` pozostaje poza Gitem: lokalny build może zawierać Twoje „O mnie” z `local-config/defaults.json`. Gotowe, neutralne buildy publikujemy jako ZIP-y w **GitHub Releases**. Nie trzeba ich kompilować ani pobierać całego repozytorium.
 
 ## Pierwsze uruchomienie
 
@@ -291,6 +306,8 @@ Identyczna analiza może wrócić z pamięci panelu bez nowego wywołania API. *
 
 ## Aktualizacja i wersje
 
+**Po instalacji z ZIP-a:** pobierz nową paczkę z [Releases](https://github.com/auditlog/linkedin-comment-assistant/releases/latest), rozpakuj ją i podmień pliki w tym samym katalogu, z którego wtyczka jest już załadowana. Zachowaj ścieżkę katalogu i pozostaw rozszerzenie zainstalowane.
+
 Jeśli korzystasz z kopii repozytorium, pobierz aktualną wersję i zbuduj rozszerzenie:
 
 ```bash
@@ -299,7 +316,7 @@ npm ci
 npm run build
 ```
 
-Potem w `edge://extensions` (albo `chrome://extensions`) kliknij **Załaduj ponownie** przy wtyczce i odśwież otwarte karty LinkedIna. Przy zmianie lokalnego kodu wystarczy ponowny build i przeładowanie.
+W obu przypadkach w `edge://extensions` (albo `chrome://extensions`) kliknij **Załaduj ponownie** przy wtyczce i odśwież otwarte karty LinkedIna. Przy zmianie lokalnego kodu wystarczy ponowny build i przeładowanie.
 
 Przeładowanie rozszerzenia czyści szkice sesyjne. Przed aktualizacją skopiuj ważny tekst albo włącz trwały zapis szkiców w ustawieniach. Ustawienia i historia pozostają w pamięci lokalnej.
 
@@ -312,7 +329,7 @@ npm version minor --no-git-tag-version   # nowa funkcja albo zmiana zachowania
 
 Opcja `--no-git-tag-version` sprawia, że npm nie tworzy własnego commita ani tagu. Nowy numer, wpis w `CHANGELOG.md` i zmiany w kodzie trafiają do jednego commita. Build zatrzymuje się, gdy numery w `package.json` i manifeście się różnią.
 
-Sama dokumentacja i testy nie wymagają zmiany numeru wersji. Reguły wydań opisuje [`CLAUDE.md`](CLAUDE.md#wersje).
+Sama dokumentacja i testy nie wymagają zmiany numeru wersji. Reguły numerowania opisuje [`CLAUDE.md`](CLAUDE.md#wersje), a publikacji ZIP-a i GitHub Release — [`AGENTS.md`](AGENTS.md).
 
 ## Przeniesienie na inny komputer
 
@@ -320,25 +337,22 @@ Wtyczka nie ma konta ani synchronizacji. Na nowy komputer przenosisz dwie rzeczy
 
 **Wariant A, bez Node.js i bez kodu:**
 
-1. Skopiuj folder `dist/` (np. `C:\code\linkedin_plugin\dist`) w stałe miejsce na nowym komputerze, np. `C:\Narzędzia\asystent-linkedin`.
-2. W Edge otwórz `edge://extensions`, włącz **Tryb dewelopera**, kliknij **Załaduj rozpakowane** i wskaż ten folder.
-3. Nie usuwaj ani nie przenoś folderu: Edge ładuje wtyczkę bezpośrednio z niego. Aktualizacja to podmiana zawartości folderu i **Załaduj ponownie**.
-
-Jeśli podczas budowania użyto własnego `local-config/defaults.json`, folder `dist/` zawiera też Twoje „O mnie” (bez kluczy API). Przy pierwszym otwarciu panel sam je wpisze. Takiego folderu nie dawaj innym osobom.
+Pobierz neutralną paczkę z [GitHub Releases](https://github.com/auditlog/linkedin-comment-assistant/releases/latest) i wykonaj [instalację z ZIP-a](#z-zip-bez-nodejs). Paczka nie zawiera Twojego profilu ani ustawień; przeniesiesz je plikiem kopii zapasowej.
 
 **Wariant B, z kodu (gdy chcesz budować i aktualizować wtyczkę na nowym komputerze):**
 
 1. Zainstaluj Node.js 20 lub nowszy i Git z dostępem do repozytorium.
-2. Pobierz kod i biblioteki: `git clone git@github.com:auditlog/linkedin-comment-assistant.git`, potem `cd linkedin-comment-assistant` i `npm ci`.
+2. Pobierz kod i biblioteki: `git clone https://github.com/auditlog/linkedin-comment-assistant.git`, potem `cd linkedin-comment-assistant` i `npm ci`.
 3. Jeśli korzystasz z własnych ustawień domyślnych, skopiuj ze starego komputera `local-config/defaults.json` do folderu `local-config/` nowej kopii. Możesz też pominąć ten krok i wpisać „O mnie” w panelu albo wczytać kopię zapasową.
 4. Uruchom `npm run build`. Dopiero ten krok przenosi „O mnie” z `local-config/defaults.json` do `dist/defaults.json`.
-5. Załaduj `dist/` w Edge jak w krokach 2–3 sekcji [Instalacja](#instalacja).
+5. Załaduj `dist/` w Edge zgodnie z sekcją [Instalacja](#instalacja).
 
 **W obu wariantach:** na starym komputerze kliknij w ustawieniach **Eksportuj do pliku**, a na nowym **Importuj z pliku** (sekcja [Kopia zapasowa](#kopia-zapasowa)). Klucze API wpisz na nowym komputerze ponownie albo dołącz je do eksportu i usuń plik po imporcie.
 
 | Plik lub folder | Co zawiera | Kopiować? |
 |---|---|---|
-| `dist/` | gotowa wtyczka i `defaults.json` z „O mnie” | tak, w wariancie A |
+| ZIP z GitHub Releases | gotowa wtyczka z pustym `defaults.json` | tak, w wariancie A |
+| `dist/` | osobisty build, który może zawierać „O mnie” | opcjonalnie między własnymi komputerami; nie udostępniaj go innym osobom |
 | `local-config/defaults.json` | „O mnie” i ustawienia domyślne, bez kluczy | tak, w wariancie B |
 | `asystent-linkedin-kopia-….json` | ustawienia, styl, historia, opcjonalnie klucze | tak, w obu wariantach; usuń po imporcie |
 | kod z repozytorium | źródła wtyczki | w wariancie B przez `git clone`, nie kopiuj ręcznie |
@@ -365,7 +379,7 @@ test/e2e/       test całości w Chromium z atrapą LinkedIna (feed, strona wiad
                 okienko czatu w shadow DOM, dokumenty i ankiety) i API
 test/eval/      syntetyczne przypadki oceny modelu i rubryki oceny ręcznej
 scripts/        ikony, wersja, wyszukiwanie Chromium, sonda struktury LinkedIna (diagnose-linkedin.js),
-                uruchamianie oceny modelu (evaluate.mjs)
+                ocena modelu (evaluate.mjs), pakowanie i weryfikacja wydania (release.mjs, test-release.mjs)
 ```
 
 Gdy LinkedIn zmieni budowę strony i wtyczka przestanie odczytywać posty, zacznij od list selektorów na górze `src/content/linkedin-dom.js`. Przy wiadomościach: `src/content/linkedin-messaging.js`.
@@ -397,6 +411,7 @@ Przy każdym wyniku napisz, co widać w poście (np. „dokument, 8 stron, tytu�
 npm test            # testy jednostkowe
 npm run test:e2e    # build i test w Chromium, bez kosztów i bez klucza API
 npm run eval        # opis syntetycznych przypadków, bez wywołań API
+npm run test:release # neutralny build, ZIP, świeży profil i pełne E2E na zawartości ZIP-a
 ```
 
 Testy E2E używają tymczasowego profilu przeglądarki, fikcyjnych ustawień i atrap API. Sześć przypadków sprawdza wszystkie długości dla komentarzy i wiadomości razem z „O mnie” i pamięcią stylu. Kolejne sprawdzają zmianę profilu przed poprawką oraz odtworzony szkic wiadomości. Do atrap API trafiają syntetyczne wartości „O mnie”. Testy nie mierzą, czy rzeczywisty model zachowa wybraną długość lub ton.
@@ -410,6 +425,19 @@ for f in *.deb; do dpkg -x "$f" ../root; done
 ```
 
 Zrzuty ekranu panelu do przeglądu: `LCA_SCREENSHOTS=/ścieżka/do/folderu npm run test:e2e`.
+
+### Pakowanie i publikowanie wydania
+
+`npm run package` buduje neutralną wersję w `.cache/release-build/` i tworzy dwa pliki w `.cache/releases/v0.8.1/`:
+
+- `linkedin-comment-assistant-v0.8.1.zip` — 11 plików rozszerzenia, z `manifest.json` bezpośrednio w głównym katalogu archiwum;
+- `SHA256SUMS.txt` — suma SHA-256 ZIP-a.
+
+Build dystrybucyjny nie czyta `local-config/defaults.json` i nie nadpisuje osobistego `dist/`. Pakowanie odrzuca dodatkowe pliki, dowiązania, niepusty `defaults.json` i niezgodną wersję manifestu. Biblioteka ZIP jest wyłącznie zależnością deweloperską.
+
+`npm run test:release` tworzy paczkę, sprawdza sumę i zawartość, ładuje ją w świeżym profilu Chromium z pustym kluczem i „O mnie”, a następnie wykonuje pełne E2E na rozpakowanym ZIP-ie z atrapami API. Nie korzysta z rzeczywistych kluczy ani prywatnego profilu.
+
+Pełny proces publikacji, w tym kontrolę sekretów i pobranie załączników do ponownej weryfikacji, opisuje [`AGENTS.md`](AGENTS.md). ZIP i suma kontrolna trafiają do GitHub Release przypisanego do konkretnego tagu wersji. Wygenerowane buildy pozostają poza historią źródeł.
 
 ### Ocena jakości modelu
 

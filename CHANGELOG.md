@@ -1,5 +1,11 @@
 # Historia zmian
 
+## 0.8.1 (2026-11-14)
+
+- Gotowa paczka ZIP do pobrania w GitHub Releases i plik `SHA256SUMS.txt`. Instalacja po rozpakowaniu przez „Załaduj rozpakowane”, bez Node.js i budowania źródeł.
+- Osobny build dystrybucyjny bez odczytu prywatnych ustawień. Pakowanie dopuszcza tylko 11 plików wtyczki i pusty `defaults.json`; osobisty `dist/` pozostaje bez zmian i poza Gitem.
+- Test ZIP-a obejmuje sumę kontrolną, pierwsze uruchomienie z pustym profilem oraz pełne E2E na zawartości archiwum. README opisuje instalację i aktualizację paczki, a AGENTS.md proces kolejnych wydań.
+
 ## 0.8.0 (2026-11-13)
 
 - Zapisane zmiany „O mnie” i preferencji stylu obowiązują od kolejnej poprawki tekstu. W 0.7.0 poprawki zachowywały stary profil i styl z chwili pierwszego napisania. Ustawienia modelu, effort i rozumowania nadal pozostają stałe w ramach rozmowy.

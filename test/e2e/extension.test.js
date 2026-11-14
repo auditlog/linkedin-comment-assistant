@@ -14,7 +14,8 @@ import { chromiumLaunchOptions } from '../../scripts/chromium.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, '..', '..');
-const distDir = path.join(projectRoot, 'dist');
+const distDir = process.env.LCA_EXTENSION_DIR
+  ? path.resolve(process.env.LCA_EXTENSION_DIR) : path.join(projectRoot, 'dist');
 
 // 1x1 transparent PNG
 const PNG = Buffer.from(
