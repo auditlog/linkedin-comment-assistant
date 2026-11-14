@@ -65,7 +65,7 @@ Kliknij ikonę wtyczki. Panel boczny otworzy się na ustawieniach.
    | Anthropic | https://console.anthropic.com/settings/keys | `sk-ant-…` | `claude-sonnet-5-5` |
    | OpenRouter | https://openrouter.ai/keys | `sk-or-…` | `anthropic/claude-sonnet-5.5` |
 
-2. Uzupełnij **O mnie**: swoją rolę, obszar pracy i fakty, do których model może nawiązywać. Preferencje pisania możesz wpisać w sekcji **Twój styl**, osobno dla komentarzy i wiadomości.
+2. Uzupełnij **O mnie**: swoją rolę, obszar pracy i fakty, do których model może nawiązywać. Możesz zacząć od [fikcyjnego przykładu lub szablonu](#przykładowe-o-mnie). Preferencje pisania możesz wpisać w sekcji **Twój styl**, osobno dla komentarzy i wiadomości.
 3. Kliknij **Sprawdź połączenie**, a potem **Zapisz ustawienia**.
 
 ## Jak używać
@@ -192,6 +192,36 @@ Zmiana „O mnie” lub preferencji wymaga **Zapisz ustawienia**. Potem wpisz po
 Przy OpenRouterze wtyczka wysyła effort i rozumowanie tak samo jak do Anthropic. Nie wiadomo, czy OpenRouter je przekazuje. Jeśli zwróci błąd 400, ustaw w obu grupach effort „Domyślna modelu” i rozumowanie „Automatyczne” oraz wyłącz „Pokaż tok rozumowania”. Komunikat błędu podpowiada, którą z tych zmian zrobić.
 
 Ustawienia zapisane przed wersją 0.5.0 miały jeden effort. Po aktualizacji obie grupy dostają tę samą wartość.
+
+### Przykładowe „O mnie”
+
+W ustawieniach wklej opis do pola **O mnie** i kliknij **Zapisz ustawienia**. Poniższy przykład dotyczy fikcyjnej osoby. Zastąp rolę, doświadczenia i cele własnymi; usuń każde zdanie, które nie jest o Tobie prawdziwe.
+
+**Gotowy przykład do przerobienia:**
+
+```text
+Pracuję jako koordynator projektów w firmie przygotowującej szkolenia online dla dorosłych. Organizuję pracę zespołu, zbieram potrzeby uczestników i współpracuję z trenerami.
+
+Mam praktyczne doświadczenie w organizacji webinarów, planowaniu terminów i zbieraniu opinii po szkoleniach. Interesują mnie dostępność materiałów, uczenie się dorosłych i usprawnianie codziennej współpracy. Dopiero poznaję zastosowania AI w edukacji; nie przedstawiaj mnie jako eksperta w tej dziedzinie.
+
+Na LinkedInie chcę wymieniać doświadczenia z osobami prowadzącymi szkolenia i zarządzającymi projektami. Zależy mi na rozmowie o konkretnych rozwiązaniach. Nie promuj moich usług, jeśli o to nie poproszę, ani nie dopisuj wyników, certyfikatów czy relacji, których tu nie podaję.
+```
+
+**Szablon do uzupełnienia:**
+
+```text
+Moja rola i branża: [kim jestem i w jakim obszarze pracuję].
+Na co dzień zajmuję się: [2–3 konkretne zadania].
+Z praktyki znam: [doświadczenia, o których mogę mówić publicznie].
+Interesują mnie: [tematy, pod którymi chcę zabierać głos].
+Dopiero poznaję: [obszary, w których nie chcę udawać eksperta].
+Na LinkedInie chcę: [cel, np. wymiana doświadczeń lub poznawanie ludzi z branży].
+Nie przypisuj mi ani nie ujawniaj: [np. niepodanych wyników, rekomendacji, nazw klientów].
+```
+
+Zastąp pola w nawiasach i usuń niepotrzebne wiersze. Wystarczą konkretne informacje, które pomogą dobrać temat i perspektywę odpowiedzi. Nie wpisuj kluczy, haseł ani poufnych danych: „O mnie” trafia do dostawcy modelu razem z zadaniami.
+
+Ton i długość wybieraj w panelu dla danego tekstu. Stałe wskazówki pisania umieść w **Twój styl**, np. „Używaj prostych słów. Nie dodawaj pytania do każdego komentarza”. Preferencje wiadomości mają osobne pole.
 
 ### „O mnie” z pliku lokalnego
 
